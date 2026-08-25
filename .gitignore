@@ -62,6 +62,8 @@ ppe-detection/**/results/**/*.csv
 ppe-detection/**/results/**/*.png
 ppe-detection/**/results/**/*.jpg
 
+ppe-detection/v2_pipeline/docs/pipeline_refactor_plan.md
+
 # Sign detection local data and generated outputs
 sign-detection/data/input/images/*
 sign-detection/data/input/labels/*
@@ -76,9 +78,13 @@ sign-detection/weights/**
 !sign-detection/**/.gitkeep
 !sign-detection/AGENTS.md
 
+# Behavior Detection 
+behavioral-detection/data/**
+behavioral-detection/docs/behavior_modeling_refactor_plan.md
+
 # OS files
 .DS_Store
 Thumbs.db
 
 # Agents
-AGENTS.md
+**/AGENTS.md

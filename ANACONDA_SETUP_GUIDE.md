@@ -9,8 +9,8 @@ From the repository root:
 ```powershell
 cd C:\Github\smart-factory-safety-monitoring-system
 conda env create -f environment.yml
-conda activate ppe-yolo
-python -m ipykernel install --user --name=ppe-yolo --display-name "Python (ppe-yolo)"
+conda activate smart-factory-train
+python -m ipykernel install --user --name=smart-factory-train --display-name "Python (smart-factory-train)"
 ```
 
 ## 2. Install PyTorch for Your Device
