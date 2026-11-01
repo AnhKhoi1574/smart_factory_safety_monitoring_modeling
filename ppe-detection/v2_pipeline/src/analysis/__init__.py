@@ -1,1 +1,1 @@
-"""EDA helpers for the PPE v2 pipeline."""
+"""Compact analysis and plotting helpers for the PPE v2 pipeline."""

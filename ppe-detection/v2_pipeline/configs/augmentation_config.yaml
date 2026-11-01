@@ -1,7 +1,7 @@
 offline_augmentation:
-  ir_ratio: 0.25
-  sunlight_ratio: 0.15
-  blur_compression_ratio: 0.10
+  ir: 0.25
+  sunlight: 0.15
+  blur_compression: 0.10
 
 online_augmentation:
   hsv_h: 0.015

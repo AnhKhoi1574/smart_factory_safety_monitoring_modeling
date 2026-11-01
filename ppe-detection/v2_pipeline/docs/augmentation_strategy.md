@@ -1,69 +1,42 @@
 # Augmentation Strategy
 
-The v2 PPE pipeline uses two augmentation layers:
+## Two layers
 
-- offline augmentation generated as additional training samples,
-- online augmentation inside Ultralytics training.
+The pipeline separates:
 
-## Split-Before-Augmentation Rule
+- Offline augmentation: creates real train-only image files.
+- Online augmentation: Ultralytics training arguments with no persistent
+  dataset output.
 
-Always split original data before augmentation:
+Always freeze original train/validation/test membership before augmentation.
+Validation and test images are never augmented.
 
-```text
-validate input sources
--> create data/generated/splits
--> augment training split only
--> build experiments
--> train
-```
+## Offline augmentation
 
-Validation and test images must stay original and untouched.
+Notebook 03 reads only `train_original.txt` and generates mild, non-geometric:
 
-## Notebook 04 Offline Augmentation
+- IR/grayscale CCTV simulation,
+- sunlight/glare simulation,
+- blur/JPEG-compression simulation.
 
-Notebook `04_offline_augmentation.ipynb` reads only:
+Because geometry does not change, labels are copied byte-for-byte. Existing
+targets are not overwritten unless regeneration is explicitly enabled.
 
-```text
-data/generated/splits/train/images/
-data/generated/splits/train/labels/
-```
+The notebook retains:
 
-It writes all offline augmented samples into one generated train-only pool:
+- `csv/offline_augmentation_summary.csv`,
+- `figures/offline_augmentation_before_after.png`,
+- `manifests/train_original_plus_offline.txt`.
 
-```text
-data/generated/augmented/images/
-data/generated/augmented/labels/
-```
+The combined manifest is built from original paths plus only outputs accepted
+from the current augmentation run, preventing stale files from entering an
+experiment silently.
 
-Current offline transforms:
+## Online augmentation
 
-- IR / grayscale CCTV simulation
-- harsh sunlight / glare simulation
-- blur / JPEG compression simulation
+Configured online values live in `configs/augmentation_config.yaml`. Experiment
+A/C receives neutral values for every configured key; B/D receives the tracked
+values. Online settings never change the dataset YAML.
 
-These transforms are intentionally mild and do not move objects. Because object
-geometry is unchanged, labels are copied unchanged. This preserves all four
-classes:
-
-```text
-0 = person
-1 = helmet
-2 = vest
-3 = cleaning_coverall
-```
-
-If geometric augmentation is added later, bounding boxes must be updated instead
-of copied unchanged.
-
-## Report Policy
-
-Notebook 04 keeps artifacts small. It saves only:
-
-```text
-reports/augmentation/offline_augmentation_report.csv
-reports/augmentation/offline_augmentation_summary.csv
-```
-
-It does not save separate CSVs for each augmentation type or default example
-figures. Visual checks can be added later if a specific augmentation setting
-needs review.
+If geometric offline transforms are added later, labels must be transformed
+with the images and the visual QA contract must be updated.

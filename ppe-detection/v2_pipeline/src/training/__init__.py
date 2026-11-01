@@ -1,1 +1,1 @@
-"""Training helpers for YOLO candidate and final model workflows."""
+"""Minimal Ultralytics training, evaluation, and export helpers."""

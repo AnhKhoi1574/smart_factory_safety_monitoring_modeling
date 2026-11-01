@@ -1,39 +1,21 @@
 project_name: ppe_detection_v2
 
 input:
-  root: data/input
   open_source: data/input/open_source
   factory_source: data/input/factory_source
   test_source: data/input/test_source
 
 generated:
-  root: data/generated
-  splits: data/generated/splits
   augmented: data/generated/augmented
-  experiments: data/generated/experiments
-
-reports:
-  validation: reports/validation
-  eda: reports/eda
-  augmentation: reports/augmentation
-  experiments: reports/experiments
-  training: reports/training
-  figures: reports/figures
 
 valid_image_extensions:
   - .jpg
   - .jpeg
   - .png
 
-classes:
-  0: person
-  1: helmet
-  2: vest
-  3: cleaning_coverall
-
 split:
-  train: 0.80
-  val: 0.20
-  test: 0.00
+  factory_train: 0.80
+  factory_val: 0.20
 
 random_seed: 42
+allow_empty_labels: false

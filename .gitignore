@@ -48,6 +48,10 @@ ppe-detection/**/data/experiments/**
 # YOLO outputs
 ppe-detection/**/runs/**
 
+# Run-scoped PPE v2 artifacts
+ppe-detection/v2_pipeline/artifacts/**
+!ppe-detection/v2_pipeline/artifacts/.gitkeep
+
 # Model weights and exports
 *.pt
 *.onnx
@@ -81,6 +85,7 @@ sign-detection/weights/**
 # Behavior Detection 
 behavioral-detection/data/**
 behavioral-detection/docs/behavior_modeling_refactor_plan.md
+behavioral-detection/artifacts/**
 
 # OS files
 .DS_Store

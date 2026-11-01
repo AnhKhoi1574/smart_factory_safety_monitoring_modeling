@@ -1,133 +1,65 @@
-"""Model export helpers for downstream deployment targets."""
+"""Export only requested final deployment formats into the final run artifact."""
 
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
 
-EXPORT_SUFFIXES = {
-    "onnx": ".onnx",
-    "engine": ".engine",
-    "torchscript": ".torchscript",
-    "openvino": "_openvino_model",
-}
-
-
 def export_final_model(
     weights_path: Path,
+    export_formats: Iterable[str],
     output_dir: Path,
-    formats: list[str],
-    imgsz: int,
-    device: str | int,
 ) -> pd.DataFrame:
-    """Export final YOLO weights to deployment formats.
+    """Export a final checkpoint and retain one descriptive file per format.
 
-    Each requested format is attempted independently. Failures are recorded in
-    the returned report so TensorRT or optional exporter issues do not block
-    ONNX or the rest of Notebook 08.
+    Args:
+        weights_path: Locked final checkpoint.
+        export_formats: Ultralytics export format names, such as `onnx`.
+        output_dir: Run-local `models/` directory.
+
+    Returns:
+        One status row per requested format. Machine-dependent failures are
+        recorded instead of aborting other formats.
     """
-    weights_path = Path(weights_path)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    from ultralytics import YOLO
 
+    checkpoint = Path(weights_path).resolve()
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Final checkpoint does not exist: {checkpoint}")
+    destination_dir = Path(output_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    model = YOLO(str(checkpoint))
     rows: list[dict[str, Any]] = []
-    if not weights_path.exists():
-        return pd.DataFrame(
-            [
-                {
-                    "format": export_format,
-                    "status": "failed",
-                    "source_weights": str(weights_path),
-                    "exported_path": "",
-                    "copied_path": "",
-                    "error_message": f"Weights not found: {weights_path}",
-                }
-                for export_format in formats
-            ]
-        )
-
-    for export_format in formats:
+    for export_format in export_formats:
         row = {
-            "format": export_format,
+            "format": str(export_format),
             "status": "not_started",
-            "source_weights": str(weights_path),
-            "exported_path": "",
-            "copied_path": "",
+            "output_path": "",
             "error_message": "",
         }
         try:
-            from ultralytics import YOLO
-
-            model = YOLO(str(weights_path))
-            exported = model.export(
-                format=export_format,
-                imgsz=imgsz,
-                device=device,
-            )
-            exported_path = _resolve_export_path(exported)
-            copied_path = _copy_export_artifact(
-                exported_path=exported_path,
-                output_dir=output_dir,
-                export_format=export_format,
-            )
-            row.update(
-                {
-                    "status": "exported",
-                    "exported_path": str(exported_path),
-                    "copied_path": str(copied_path),
-                }
-            )
+            exported = model.export(format=str(export_format))
+            source = _export_path(exported)
+            target = destination_dir / f"final_model{source.suffix}"
+            if source.resolve() != target.resolve():
+                if target.exists():
+                    raise FileExistsError(f"Export target already exists: {target}")
+                shutil.move(str(source), str(target))
+            row.update({"status": "exported", "output_path": str(target)})
         except Exception as exc:
             row.update({"status": "failed", "error_message": str(exc)})
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
-def export_model(model_path: Path, export_format: str = "onnx") -> Path:
-    """Export a final YOLO model to a deployment-friendly format."""
-    model_path = Path(model_path)
-    report = export_final_model(
-        weights_path=model_path,
-        output_dir=model_path.parent,
-        formats=[export_format],
-        imgsz=640,
-        device=0,
-    )
-    copied_path = report.iloc[0].get("copied_path", "")
-    return Path(copied_path) if copied_path else model_path
-
-
-def _resolve_export_path(exported: Any) -> Path:
+def _export_path(exported: Any) -> Path:
+    """Normalize common Ultralytics export return values to one file path."""
     if isinstance(exported, (str, Path)):
         return Path(exported)
     if isinstance(exported, list) and exported:
         return Path(exported[0])
-    raise ValueError(f"Could not resolve export artifact path from: {exported!r}")
-
-
-def _copy_export_artifact(
-    exported_path: Path,
-    output_dir: Path,
-    export_format: str,
-) -> Path:
-    exported_path = Path(exported_path)
-    output_dir = Path(output_dir)
-    if not exported_path.exists():
-        raise FileNotFoundError(f"Export artifact not found: {exported_path}")
-
-    if exported_path.is_dir():
-        target_dir = output_dir / exported_path.name
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(exported_path, target_dir)
-        return target_dir
-
-    suffix = EXPORT_SUFFIXES.get(export_format, exported_path.suffix)
-    target_path = output_dir / f"final_model{suffix}"
-    shutil.copy2(exported_path, target_path)
-    return target_path
+    raise ValueError(f"Could not resolve exported model path from {exported!r}")

@@ -1,112 +1,57 @@
 # Dataset Preparation
 
-The PPE v2 pipeline now uses direct input source lanes instead of a merged
-`master_original` folder.
+## Source lanes
 
-## Input Layout
-
-Place local YOLO data under:
+The pipeline reads three immutable YOLO source lanes:
 
 ```text
-data/input/open_source/
-  images/
-  labels/
-
-data/input/factory_source/
-  images/
-  labels/
-
-data/input/test_source/
-  images/
-  labels/
+data/input/open_source/{images,labels}/
+data/input/factory_source/{images,labels}/
+data/input/test_source/{images,labels}/
 ```
 
-Source meaning:
+- Open-source samples are train-only.
+- Factory samples are split into train and validation.
+- Test-source samples form the independent final test set.
 
-- `open_source`: public or external data used for training only.
-- `factory_source`: target-domain CCTV data used for training and validation.
-- `test_source`: final untouched test data used only for final evaluation.
+Each image uses a matching sibling `.txt` label with the same stem. The fixed
+class map is stored only in `configs/class_names.yaml`.
 
-Each image should have a matching `.txt` label file with the same base name.
+## Audit
 
-## Class Map
+Notebook 01 validates image readability, image-label pairing, supported image
+types, five-value YOLO rows, numeric normalized coordinates, positive box size,
+box boundaries, class IDs, duplicate annotation rows, duplicate stems, and
+duplicate content. Empty labels follow `allow_empty_labels` in
+`configs/dataset_config.yaml`.
 
-Use the fixed four-class YOLO schema:
+The audit is read-only. Invalid rows block split freezing.
+
+## Manifest split
+
+Notebook 02 creates small run-local files instead of copying images:
 
 ```text
-0 = person
-1 = helmet
-2 = vest
-3 = cleaning_coverall
+manifests/train_original.txt
+manifests/val.txt
+manifests/test.txt
+manifests/split_assignments.csv
 ```
 
-Do not add violation classes. Role and violation logic is handled after
-detection by the backend.
+Factory train/validation membership is deterministic for the configured seed
+and grouped by helmet, vest, and cleaning-coverall presence. Singleton groups
+remain in train and produce a warning.
 
-## Notebook 01
+All manifests contain absolute image paths. Ultralytics resolves labels through
+the sibling `images/` -> `labels/` layout. Train, validation, and test path
+overlap is rejected.
 
-`01_validate_and_merge_dataset.ipynb` now validates the three input source lanes
-only. It does not merge, split, augment, train, or modify input files.
+Notebook 02 also fingerprints the ordered test image and label bytes. Notebook
+06 recomputes that SHA-256 value before final training/evaluation and stops if
+the supposedly untouched test source changed.
 
-Validation checks include:
+## Storage policy
 
-- readable image
-- supported image extension
-- matching image-label pair
-- valid class ID
-- five YOLO values per non-empty label row
-- numeric normalized coordinates
-- positive box width and height
-- box boundaries inside the image
-- duplicate base-name and duplicate-content warnings
-
-Reports are written under `reports/validation/`:
-
-- `validation_report.csv`
-- `source_summary.csv`
-
-Invalid rows and warnings are displayed in the notebook by filtering
-`validation_report.csv`; no separate invalid-samples report is needed.
-
-## Split Policy
-
-The later split notebook should use:
-
-- `train`: valid `open_source` samples plus the training portion of
-  `factory_source`.
-- `val`: validation portion of `factory_source` only.
-- `test`: valid `test_source` only.
-
-This keeps validation and test focused on the real factory domain while still
-using open-source data to improve training coverage.
-
-Notebook `03_split_dataset.ipynb` creates this generated split under:
-
-```text
-data/generated/splits/train/
-data/generated/splits/val/
-data/generated/splits/test/
-```
-
-The factory train/validation split is stratified by whether images contain:
-
-- `helmet`
-- `vest`
-- `cleaning_coverall`
-
-If a class or class-combination appears in too few factory images to be present
-in both train and validation, Notebook 03 records a warning rather than hiding
-the imbalance.
-
-## Generated Data
-
-Generated data belongs under:
-
-```text
-data/generated/splits/
-data/generated/augmented/
-data/generated/experiments/
-```
-
-Do not recreate `data/master_original/`, `data/raw_sources/`, or old
-train-only `data/open_source_train/` outputs for the new pipeline.
+Do not create active `data/generated/splits/` or
+`data/generated/experiments/` trees. Existing legacy generated folders may
+remain locally until a separately authorized cleanup after parity checks.

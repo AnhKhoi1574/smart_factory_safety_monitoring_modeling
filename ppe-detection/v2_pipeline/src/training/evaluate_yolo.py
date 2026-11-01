@@ -1,584 +1,388 @@
-"""Evaluation helpers for YOLO candidate and final models."""
+"""Compact metric extraction, latency, and final-evaluation helpers."""
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
-import yaml
 
-
-VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
+from src.dataset.manifests import read_manifest
 
 
 def extract_training_metrics(run_dir: Path) -> dict[str, Any]:
-    """Extract comparable metrics from an Ultralytics training run directory.
+    """Read comparable metrics from one Ultralytics `results.csv`.
 
-    Ultralytics has changed metric object names across releases, so this helper
-    reads the stable ``results.csv`` artifact when it exists and returns ``None``
-    for metrics that are unavailable.
+    Args:
+        run_dir: Native Ultralytics training run directory.
+
+    Returns:
+        Validation metrics and checkpoint paths. Missing values remain `None`.
     """
-    run_dir = Path(run_dir)
-    results_csv = run_dir / "results.csv"
-    weights_dir = run_dir / "weights"
-    best_weights_path = weights_dir / "best.pt"
-    last_weights_path = weights_dir / "last.pt"
-
+    run_path = Path(run_dir)
+    best_weights = run_path / "weights" / "best.pt"
+    last_weights = run_path / "weights" / "last.pt"
     metrics: dict[str, Any] = {
         "precision": None,
         "recall": None,
         "map50": None,
         "map50_95": None,
-        "fitness": None,
         "training_time_seconds": None,
-        "best_weights_path": str(best_weights_path) if best_weights_path.exists() else "",
-        "last_weights_path": str(last_weights_path) if last_weights_path.exists() else "",
-        "model_size_mb": _file_size_mb(best_weights_path),
+        "best_weights_path": str(best_weights) if best_weights.is_file() else "",
+        "last_weights_path": str(last_weights) if last_weights.is_file() else "",
+        "model_size_mb": round(best_weights.stat().st_size / 1_048_576, 3)
+        if best_weights.is_file()
+        else None,
     }
-
-    if not results_csv.exists():
+    results_path = run_path / "results.csv"
+    if not results_path.is_file():
         return metrics
-
-    try:
-        results_df = pd.read_csv(results_csv)
-    except Exception:
+    results = pd.read_csv(results_path)
+    if results.empty:
         return metrics
-
-    if results_df.empty:
-        return metrics
-
-    last_row = results_df.iloc[-1]
-    metrics["precision"] = _row_metric(last_row, results_df.columns, ["precision"])
-    metrics["recall"] = _row_metric(last_row, results_df.columns, ["recall"])
-    metrics["map50"] = _row_metric(
-        last_row,
-        results_df.columns,
-        ["map50", "mAP50"],
-        exclude=["95"],
+    row = results.iloc[-1]
+    metrics.update(
+        {
+            "precision": _row_value(row, ("metrics/precision", "precision")),
+            "recall": _row_value(row, ("metrics/recall", "recall")),
+            "map50": _row_value(row, ("metrics/mAP50(B)", "map50"), exclude=("95",)),
+            "map50_95": _row_value(
+                row,
+                ("metrics/mAP50-95(B)", "map50-95", "map50_95"),
+            ),
+            "training_time_seconds": _row_value(row, ("time",)),
+        }
     )
-    metrics["map50_95"] = _row_metric(
-        last_row,
-        results_df.columns,
-        ["map50-95", "map50_95", "mAP50-95"],
-    )
-    metrics["fitness"] = _row_metric(last_row, results_df.columns, ["fitness"])
-    metrics["training_time_seconds"] = _row_metric(last_row, results_df.columns, ["time"])
     return metrics
 
 
-def evaluate_candidate_model(
-    weights_path: Path,
-    data_yaml: Path,
-    imgsz: int,
-    device: str | int,
-) -> dict[str, Any]:
-    """Validate one trained YOLO model and return validation metrics."""
-    weights_path = Path(weights_path)
-    data_yaml = Path(data_yaml)
-    result: dict[str, Any] = {
-        "precision": None,
-        "recall": None,
-        "map50": None,
-        "map50_95": None,
-        "fitness": None,
-        "status": "not_run",
-        "error_message": "",
-    }
+def extract_best_epoch(run_dir: Path) -> dict[str, Any]:
+    """Select the first epoch with maximum validation mAP50-95.
 
-    if not weights_path.exists():
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"Weights not found: {weights_path}",
-            }
-        )
-        return result
+    Ultralytics detection fitness currently uses mAP50-95, so this reproduces
+    the epoch decision behind `best.pt` while returning a compact auditable row
+    for a later train-plus-validation refit.
 
-    try:
-        from ultralytics import YOLO
+    Args:
+        run_dir: Completed calibration run containing `results.csv`.
 
-        resolved_data_yaml = _resolve_dataset_yaml_for_ultralytics(data_yaml, weights_path.parent)
-        model = YOLO(str(weights_path))
-        metrics = model.val(
-            data=str(resolved_data_yaml),
-            imgsz=imgsz,
-            device=device,
-            verbose=False,
-        )
-        result.update(_metrics_from_ultralytics_result(metrics))
-        result["status"] = "evaluated"
-    except Exception as exc:
-        result.update({"status": "failed", "error_message": str(exc)})
-    return result
+    Returns:
+        Best one-based epoch and its validation precision, recall, mAP50, and
+        mAP50-95 values.
 
-
-def evaluate_final_model(
-    weights_path: Path,
-    data_yaml: Path,
-    imgsz: int,
-    device: str | int,
-    split: str = "test",
-    output_dir: Path | None = None,
-) -> dict[str, Any]:
-    """Evaluate the locked final model on the untouched final split.
-
-    This helper is intended for Notebook 08. It records missing metrics as
-    ``None`` rather than failing when Ultralytics result attributes differ
-    across versions.
+    Raises:
+        FileNotFoundError: If the native results CSV is missing.
+        ValueError: If no finite mAP50-95 value can select an epoch.
     """
-    weights_path = Path(weights_path)
-    data_yaml = Path(data_yaml)
-    result: dict[str, Any] = {
-        "status": "not_run",
-        "split": split,
-        "weights_path": str(weights_path),
-        "data_yaml": str(data_yaml),
-        "precision": None,
-        "recall": None,
-        "map50": None,
-        "map50_95": None,
-        "fitness": None,
-        "validation_save_dir": "",
-        "class_metrics": [],
-        "error_message": "",
+    results_path = Path(run_dir) / "results.csv"
+    if not results_path.is_file():
+        raise FileNotFoundError(f"Training results do not exist: {results_path}")
+    results = pd.read_csv(results_path)
+    if results.empty:
+        raise ValueError(f"Training results are empty: {results_path}")
+
+    metric_column = next(
+        (
+            column
+            for column in results.columns
+            if "map50-95" in str(column).strip().lower()
+            or "map50_95" in str(column).strip().lower()
+        ),
+        None,
+    )
+    if metric_column is None:
+        raise ValueError("Calibration results contain no mAP50-95 column")
+    metric_values = pd.to_numeric(results[metric_column], errors="coerce")
+    if not metric_values.notna().any():
+        raise ValueError("Calibration results contain no finite mAP50-95 values")
+
+    # `idxmax` returns the first maximum, matching Ultralytics' strict
+    # greater-than update when equal fitness values occur later.
+    best_index = metric_values.idxmax()
+    row = results.loc[best_index]
+    epoch_value = _row_value(row, ("epoch",))
+    best_epoch = int(epoch_value) if epoch_value is not None else int(best_index) + 1
+    epoch_column = next(
+        (
+            column
+            for column in results.columns
+            if str(column).strip().lower() == "epoch"
+        ),
+        None,
+    )
+    epoch_series = (
+        pd.to_numeric(results[epoch_column], errors="coerce")
+        if epoch_column is not None
+        else pd.Series(dtype=float)
+    )
+    if epoch_series.notna().any() and float(epoch_series.min()) == 0:
+        # Older result formats may store every epoch as a zero-based index.
+        best_epoch += 1
+    return {
+        "best_epoch": best_epoch,
+        "selection_metric": "map50_95",
+        "precision": _row_value(row, ("metrics/precision", "precision")),
+        "recall": _row_value(row, ("metrics/recall", "recall")),
+        "map50": _row_value(row, ("metrics/mAP50(B)", "map50"), exclude=("95",)),
+        "map50_95": _safe_float(metric_values.loc[best_index]),
     }
-
-    if not weights_path.exists():
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"Weights not found: {weights_path}",
-            }
-        )
-        return result
-    if not data_yaml.exists():
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"Dataset YAML not found: {data_yaml}",
-            }
-        )
-        return result
-
-    try:
-        from ultralytics import YOLO
-
-        output_dir = Path(output_dir) if output_dir is not None else weights_path.parent
-        resolved_data_yaml = _resolve_dataset_yaml_for_ultralytics(data_yaml, output_dir)
-        model = YOLO(str(weights_path))
-        val_kwargs: dict[str, Any] = {
-            "data": str(resolved_data_yaml),
-            "imgsz": imgsz,
-            "device": device,
-            "split": split,
-            "plots": True,
-            "verbose": False,
-        }
-        if output_dir is not None:
-            val_kwargs.update(
-                {
-                    "project": str(output_dir.parent),
-                    "name": output_dir.name,
-                    "exist_ok": True,
-                }
-            )
-        metrics = model.val(**val_kwargs)
-        result.update(_metrics_from_ultralytics_result(metrics))
-        result["validation_save_dir"] = str(getattr(metrics, "save_dir", ""))
-        result["class_metrics"] = _class_metrics_from_ultralytics_result(metrics)
-        result["status"] = "evaluated"
-    except Exception as exc:
-        result.update({"status": "failed", "error_message": str(exc)})
-    return result
-
-
-def save_final_predictions(
-    weights_path: Path,
-    source_dir: Path,
-    output_dir: Path,
-    imgsz: int,
-    device: str | int,
-    conf: float = 0.25,
-) -> dict[str, Any]:
-    """Save visual predictions for qualitative final-test inspection."""
-    weights_path = Path(weights_path)
-    source_dir = Path(source_dir)
-    output_dir = Path(output_dir)
-    result: dict[str, Any] = {
-        "status": "not_run",
-        "weights_path": str(weights_path),
-        "source_dir": str(source_dir),
-        "output_dir": str(output_dir),
-        "num_source_images": 0,
-        "error_message": "",
-    }
-
-    if not weights_path.exists():
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"Weights not found: {weights_path}",
-            }
-        )
-        return result
-    image_paths = _collect_sample_images(source_dir, max_images=10_000)
-    if not image_paths:
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"No source images found in {source_dir}",
-            }
-        )
-        return result
-
-    try:
-        from ultralytics import YOLO
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        model = YOLO(str(weights_path))
-        model.predict(
-            source=str(source_dir),
-            imgsz=imgsz,
-            device=device,
-            conf=conf,
-            save=True,
-            project=str(output_dir.parent),
-            name=output_dir.name,
-            exist_ok=True,
-            verbose=False,
-        )
-        result.update(
-            {
-                "status": "saved",
-                "num_source_images": len(image_paths),
-            }
-        )
-    except Exception as exc:
-        result.update({"status": "failed", "error_message": str(exc)})
-    return result
 
 
 def benchmark_model_latency(
     weights_path: Path,
-    sample_images_dir: Path,
+    image_manifest: Path,
+    *,
     imgsz: int,
     device: str | int,
     max_images: int = 20,
+    warmup_images: int = 2,
 ) -> dict[str, Any]:
-    """Benchmark prediction latency on a small validation image subset."""
-    weights_path = Path(weights_path)
-    sample_images_dir = Path(sample_images_dir)
-    result: dict[str, Any] = {
-        "latency_status": "not_run",
-        "benchmark_images": 0,
-        "avg_inference_ms": None,
-        "fps": None,
-        "latency_error": "",
-    }
+    """Benchmark one model on a bounded validation-image sample.
 
-    if not weights_path.exists():
-        result.update(
-            {
-                "latency_status": "failed",
-                "latency_error": f"Weights not found: {weights_path}",
-            }
-        )
-        return result
+    Args:
+        weights_path: Trained checkpoint.
+        image_manifest: Validation image manifest; never a test manifest during
+            model selection.
+        imgsz: Ultralytics inference image size.
+        device: Ultralytics device selector.
+        max_images: Maximum timed images.
+        warmup_images: Number of untimed warmup predictions.
 
-    image_paths = _collect_sample_images(sample_images_dir, max_images=max_images)
-    if not image_paths:
-        result.update(
-            {
-                "latency_status": "failed",
-                "latency_error": f"No sample images found in {sample_images_dir}",
-            }
-        )
-        return result
-
-    try:
-        from ultralytics import YOLO
-
-        model = YOLO(str(weights_path))
-        # Warm up once so first-call setup overhead does not dominate timing.
-        model.predict(
-            source=str(image_paths[0]),
-            imgsz=imgsz,
-            device=device,
-            verbose=False,
-        )
-
-        timings: list[float] = []
-        for image_path in image_paths:
-            start_time = time.perf_counter()
-            model.predict(
-                source=str(image_path),
-                imgsz=imgsz,
-                device=device,
-                verbose=False,
-            )
-            timings.append(time.perf_counter() - start_time)
-
-        avg_seconds = sum(timings) / len(timings)
-        result.update(
-            {
-                "latency_status": "benchmarked",
-                "benchmark_images": len(timings),
-                "avg_inference_ms": avg_seconds * 1000,
-                "fps": 1.0 / avg_seconds if avg_seconds > 0 else None,
-            }
-        )
-    except Exception as exc:
-        result.update({"latency_status": "failed", "latency_error": str(exc)})
-    return result
-
-
-def rank_candidate_results(results_df: pd.DataFrame) -> pd.DataFrame:
-    """Rank candidates by validation recall, mAP, FPS, then model size.
-
-    Candidate selection is validation-only. The untouched test split should not
-    be used until final evaluation, so this helper only consumes the metrics
-    recorded during training/validation and optional validation-image latency
-    benchmarking.
+    Returns:
+        Average latency, FPS, image count, and status.
     """
-    if results_df.empty:
-        return results_df.copy()
+    from ultralytics import YOLO
 
-    ranked = results_df.copy()
-    for column in ["recall", "map50", "map50_95", "fps"]:
-        if column not in ranked:
-            ranked[column] = None
-    if "model_size_mb" not in ranked:
-        ranked["model_size_mb"] = None
+    images = read_manifest(image_manifest)[: max(1, int(max_images))]
+    if not images:
+        raise ValueError(f"Latency manifest is empty: {image_manifest}")
+    model = YOLO(str(Path(weights_path)))
+    for image_path in images[:warmup_images]:
+        model.predict(str(image_path), imgsz=imgsz, device=device, verbose=False)
 
-    successful = ranked["status"].eq("trained") if "status" in ranked else True
-    ranked["rank_score"] = (
-        ranked["recall"].fillna(-1) * 1_000_000_000
-        + ranked["map50"].fillna(-1) * 1_000_000
-        + ranked["map50_95"].fillna(-1) * 1_000
-        + ranked["fps"].fillna(-1)
-        - ranked["model_size_mb"].fillna(1_000_000) / 1_000_000
-    )
-    ranked.loc[~successful, "rank_score"] = -1
-    ranked = ranked.sort_values(
-        by=["rank_score", "recall", "map50", "map50_95", "fps", "model_size_mb"],
-        ascending=[False, False, False, False, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
-    ranked["rank"] = range(1, len(ranked) + 1)
-    return ranked
-
-
-def rank_ablation_results(results_df: pd.DataFrame) -> pd.DataFrame:
-    """Rank ablation runs by validation recall, mAP, then inference speed."""
-    if results_df.empty:
-        return results_df.copy()
-
-    ranked = results_df.copy()
-    for column in ["recall", "map50", "map50_95", "fps"]:
-        if column not in ranked:
-            ranked[column] = None
-
-    successful = ranked["status"].eq("trained") if "status" in ranked else True
-    ranked["rank_score"] = (
-        ranked["recall"].fillna(-1) * 1_000_000_000
-        + ranked["map50"].fillna(-1) * 1_000_000
-        + ranked["map50_95"].fillna(-1) * 1_000
-        + ranked["fps"].fillna(-1)
-    )
-    ranked.loc[~successful, "rank_score"] = -1
-    ranked["rank"] = range(1, len(ranked) + 1)
-    ranked = ranked.sort_values(
-        by=["rank_score", "recall", "map50", "map50_95", "fps"],
-        ascending=[False, False, False, False, False],
-        kind="stable",
-    ).reset_index(drop=True)
-    ranked["rank"] = range(1, len(ranked) + 1)
-    return ranked
-
-
-def evaluate_yolo_model(model_path: Path, data_config: Path) -> dict[str, Any]:
-    """Backward-compatible validation wrapper."""
-    return evaluate_candidate_model(
-        weights_path=model_path,
-        data_yaml=data_config,
-        imgsz=640,
-        device=0,
-    )
-
-
-def _metrics_from_ultralytics_result(metrics: Any) -> dict[str, Any]:
-    result = {
-        "precision": None,
-        "recall": None,
-        "map50": None,
-        "map50_95": None,
-        "fitness": None,
+    timings = []
+    for image_path in images:
+        started = time.perf_counter()
+        model.predict(str(image_path), imgsz=imgsz, device=device, verbose=False)
+        timings.append(time.perf_counter() - started)
+    average_seconds = sum(timings) / len(timings)
+    return {
+        "latency_status": "benchmarked",
+        "benchmark_images": len(timings),
+        "avg_inference_ms": average_seconds * 1_000,
+        "fps": 1.0 / average_seconds if average_seconds > 0 else None,
     }
-    results_dict = getattr(metrics, "results_dict", None)
-    if isinstance(results_dict, dict):
-        result["precision"] = _dict_metric(results_dict, ["precision"])
-        result["recall"] = _dict_metric(results_dict, ["recall"])
-        result["map50"] = _dict_metric(results_dict, ["map50"], exclude=["95"])
-        result["map50_95"] = _dict_metric(results_dict, ["map50-95", "map50_95"])
-        result["fitness"] = _dict_metric(results_dict, ["fitness"])
-
-    box = getattr(metrics, "box", None)
-    if box is not None:
-        result["precision"] = result["precision"] if result["precision"] is not None else getattr(box, "mp", None)
-        result["recall"] = result["recall"] if result["recall"] is not None else getattr(box, "mr", None)
-        result["map50"] = result["map50"] if result["map50"] is not None else getattr(box, "map50", None)
-        result["map50_95"] = result["map50_95"] if result["map50_95"] is not None else getattr(box, "map", None)
-    return result
 
 
-def _class_metrics_from_ultralytics_result(metrics: Any) -> list[dict[str, Any]]:
-    names = getattr(metrics, "names", {}) or {}
-    box = getattr(metrics, "box", None)
-    if box is None:
-        return []
+def evaluate_model(
+    weights_path: Path,
+    dataset_yaml: Path,
+    *,
+    split: str,
+    imgsz: int,
+    device: str | int,
+) -> dict[str, Any]:
+    """Evaluate a locked model and return compact overall/class metrics.
 
-    rows: list[dict[str, Any]] = []
+    Args:
+        weights_path: Trained checkpoint.
+        dataset_yaml: Run-local dataset config. Final evaluation includes test.
+        split: Ultralytics split name, normally `test` for the final run.
+        imgsz: Evaluation image size.
+        device: Ultralytics device selector.
+
+    Returns:
+        Mapping with one overall metric dictionary, a class metric DataFrame,
+        and an optional confusion matrix array.
+    """
+    from ultralytics import YOLO
+
+    model = YOLO(str(Path(weights_path)))
+    result = model.val(
+        data=str(Path(dataset_yaml)),
+        split=split,
+        imgsz=imgsz,
+        device=device,
+        plots=False,
+        verbose=False,
+    )
+    overall = _metrics_from_result(result)
+    class_metrics = _class_metrics_from_result(result)
+    confusion = getattr(getattr(result, "confusion_matrix", None), "matrix", None)
+    return {
+        "overall": overall,
+        "class_metrics": class_metrics,
+        "confusion_matrix": np.asarray(confusion) if confusion is not None else None,
+    }
+
+
+def save_confusion_matrix(
+    matrix: np.ndarray,
+    labels: Iterable[str],
+    output_path: Path,
+) -> Path:
+    """Save one labeled confusion-matrix figure without extra plot artifacts."""
+    import matplotlib.pyplot as plt
+
+    values = np.asarray(matrix)
+    axis_labels = list(labels)
+    if values.shape[0] == len(axis_labels) + 1:
+        axis_labels.append("background")
+    figure, axis = plt.subplots(figsize=(7, 6))
+    image = axis.imshow(values, cmap="Blues")
+    axis.set_title("Final untouched-test confusion matrix")
+    axis.set_xlabel("Predicted class")
+    axis.set_ylabel("True class")
+    axis.set_xticks(range(len(axis_labels)), axis_labels, rotation=30, ha="right")
+    axis.set_yticks(range(len(axis_labels)), axis_labels)
+    figure.colorbar(image, ax=axis, label="Detections")
+    figure.tight_layout()
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=150, bbox_inches="tight")
+    plt.close(figure)
+    return destination
+
+
+def save_prediction_grid(
+    weights_path: Path,
+    image_manifest: Path,
+    output_path: Path,
+    *,
+    imgsz: int,
+    device: str | int,
+    conf: float,
+    max_images: int = 6,
+) -> Path:
+    """Render a bounded final-test prediction sample into one contact sheet."""
+    import matplotlib.pyplot as plt
+    from ultralytics import YOLO
+
+    image_paths = read_manifest(image_manifest)[: max(1, int(max_images))]
+    model = YOLO(str(Path(weights_path)))
+    predictions = model.predict(
+        [str(path) for path in image_paths],
+        imgsz=imgsz,
+        device=device,
+        conf=conf,
+        verbose=False,
+    )
+    columns = 3
+    rows = int(np.ceil(len(predictions) / columns))
+    figure, axes = plt.subplots(rows, columns, figsize=(12, rows * 3.5), squeeze=False)
+    for axis, prediction, source_path in zip(axes.flat, predictions, image_paths):
+        rendered_bgr = prediction.plot()
+        axis.imshow(rendered_bgr[..., ::-1])
+        axis.set_title(source_path.name)
+        axis.axis("off")
+    for axis in list(axes.flat)[len(predictions):]:
+        axis.axis("off")
+    figure.suptitle(f"Final untouched-test prediction sample (images={len(predictions)})", y=1.01)
+    figure.tight_layout()
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=150, bbox_inches="tight")
+    plt.close(figure)
+    return destination
+
+
+def _metrics_from_result(result: Any) -> dict[str, Any]:
+    """Extract common aggregate metrics from an Ultralytics result object."""
+    box = getattr(result, "box", None)
+    results_dict = getattr(result, "results_dict", {}) or {}
+    return {
+        "precision": _first_available(
+            _safe_float(getattr(box, "mp", None)),
+            _dict_value(results_dict, ("precision",)),
+        ),
+        "recall": _first_available(
+            _safe_float(getattr(box, "mr", None)),
+            _dict_value(results_dict, ("recall",)),
+        ),
+        "map50": _first_available(
+            _safe_float(getattr(box, "map50", None)),
+            _dict_value(results_dict, ("map50",), exclude=("95",)),
+        ),
+        "map50_95": _first_available(
+            _safe_float(getattr(box, "map", None)),
+            _dict_value(results_dict, ("map50-95", "map50_95")),
+        ),
+    }
+
+
+def _class_metrics_from_result(result: Any) -> pd.DataFrame:
+    """Extract one class-level row per configured class when available."""
+    names = getattr(result, "names", {}) or {}
+    box = getattr(result, "box", None)
+    rows = []
     for class_id, class_name in sorted(names.items()):
-        row: dict[str, Any] = {
-            "class_id": class_id,
-            "class_name": class_name,
-            "precision": None,
-            "recall": None,
-            "map50": None,
-            "map50_95": None,
-        }
-        try:
-            class_result = box.class_result(int(class_id))
-            if len(class_result) >= 4:
-                row.update(
-                    {
-                        "precision": _safe_float(class_result[0]),
-                        "recall": _safe_float(class_result[1]),
-                        "map50": _safe_float(class_result[2]),
-                        "map50_95": _safe_float(class_result[3]),
-                    }
-                )
-        except Exception:
-            row.update(
-                {
-                    "precision": _sequence_value(getattr(box, "p", None), int(class_id)),
-                    "recall": _sequence_value(getattr(box, "r", None), int(class_id)),
-                    "map50": _sequence_value(getattr(box, "ap50", None), int(class_id)),
-                    "map50_95": _sequence_value(getattr(box, "maps", None), int(class_id)),
-                }
-            )
-        rows.append(row)
-    return rows
+        rows.append(
+            {
+                "class_id": int(class_id),
+                "class_name": str(class_name),
+                "precision": _sequence_value(getattr(box, "p", None), int(class_id)),
+                "recall": _sequence_value(getattr(box, "r", None), int(class_id)),
+                "map50": _sequence_value(getattr(box, "ap50", None), int(class_id)),
+                "map50_95": _sequence_value(getattr(box, "maps", None), int(class_id)),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def _row_metric(
+def _row_value(
     row: pd.Series,
-    columns: pd.Index,
-    candidates: list[str],
-    exclude: list[str] | None = None,
+    patterns: Iterable[str],
+    *,
+    exclude: Iterable[str] = (),
 ) -> float | None:
-    column = _find_column(columns, candidates, exclude=exclude)
-    if column is None:
-        return None
-    value = row[column]
-    return None if pd.isna(value) else float(value)
-
-
-def _dict_metric(
-    values: dict[str, Any],
-    candidates: list[str],
-    exclude: list[str] | None = None,
-) -> float | None:
-    column = _find_column(pd.Index(values.keys()), candidates, exclude=exclude)
-    if column is None:
-        return None
-    value = values[column]
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float(value: Any) -> float | None:
-    try:
-        if pd.isna(value):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _sequence_value(values: Any, index: int) -> float | None:
-    try:
-        return _safe_float(values[index])
-    except Exception:
-        return None
-
-
-def _find_column(
-    columns: pd.Index,
-    candidates: list[str],
-    exclude: list[str] | None = None,
-) -> str | None:
-    exclude = [item.lower() for item in (exclude or [])]
-    for column in columns:
-        normalized = str(column).lower().replace("_", "").replace("/", "")
-        if any(excluded in normalized for excluded in exclude):
-            continue
-        for candidate in candidates:
-            normalized_candidate = candidate.lower().replace("_", "").replace("/", "")
-            if normalized_candidate in normalized:
-                return str(column)
+    """Find a numeric metric in a result row using tolerant column patterns."""
+    normalized_patterns = tuple(pattern.lower() for pattern in patterns)
+    normalized_exclude = tuple(pattern.lower() for pattern in exclude)
+    for column in row.index:
+        normalized = str(column).strip().lower()
+        if any(pattern.lower() == normalized for pattern in normalized_patterns):
+            return _safe_float(row[column])
+    for column in row.index:
+        normalized = str(column).strip().lower()
+        if any(pattern in normalized for pattern in normalized_patterns) and not any(
+            blocked in normalized for blocked in normalized_exclude
+        ):
+            return _safe_float(row[column])
     return None
 
 
-def _collect_sample_images(sample_images_dir: Path, max_images: int) -> list[Path]:
-    if not Path(sample_images_dir).exists():
-        return []
-    image_paths = [
-        path
-        for path in sorted(Path(sample_images_dir).iterdir())
-        if path.is_file() and path.suffix.lower() in VALID_IMAGE_EXTENSIONS
-    ]
-    return image_paths[:max_images]
+def _dict_value(
+    values: dict[str, Any],
+    patterns: Iterable[str],
+    *,
+    exclude: Iterable[str] = (),
+) -> float | None:
+    """Find a numeric metric in a result dictionary by tolerant key matching."""
+    row = pd.Series(values, dtype=object)
+    return _row_value(row, patterns, exclude=exclude)
 
 
-def _file_size_mb(path: Path) -> float | None:
-    if not Path(path).exists():
+def _safe_float(value: Any) -> float | None:
+    """Convert finite scalar-like values to float and reject unavailable data."""
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
         return None
-    return Path(path).stat().st_size / (1024 * 1024)
+    return converted if np.isfinite(converted) else None
 
 
-def _resolve_dataset_yaml_for_ultralytics(data_yaml: Path, output_dir: Path) -> Path:
-    """Write a runtime YAML with an absolute dataset root when needed."""
-    data_yaml = Path(data_yaml).resolve()
-    with data_yaml.open("r", encoding="utf-8") as file_handle:
-        data_config = yaml.safe_load(file_handle)
-
-    dataset_path = Path(str(data_config.get("path", "")))
-    if dataset_path.is_absolute():
-        return data_yaml
-
-    resolved_config = dict(data_config)
-    resolved_config["path"] = str((data_yaml.parent / dataset_path).resolve())
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    resolved_yaml = output_dir / f"_{data_yaml.stem}_resolved.yaml"
-    _write_runtime_yaml(resolved_yaml, resolved_config)
-    return resolved_yaml
+def _sequence_value(values: Any, index: int) -> float | None:
+    """Read one numeric index from a tensor/list-like metric sequence."""
+    if values is None:
+        return None
+    try:
+        return _safe_float(values[index])
+    except (IndexError, KeyError, TypeError):
+        return None
 
 
-def _write_runtime_yaml(path: Path, payload: dict[str, Any]) -> None:
-    """Refresh a generated runtime YAML, replacing only this helper file."""
-    path = Path(path)
-    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-    with temporary_path.open("w", encoding="utf-8") as file_handle:
-        yaml.safe_dump(payload, file_handle, sort_keys=False)
-    temporary_path.replace(path)
+def _first_available(*values: float | None) -> float | None:
+    """Return the first metric that is not `None`, preserving valid zeroes."""
+    return next((value for value in values if value is not None), None)
