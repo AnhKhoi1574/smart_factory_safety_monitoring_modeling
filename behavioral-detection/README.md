@@ -1,22 +1,52 @@
 # Behavior classification
 
 Classify `others`, `running` and `falling` from 141 transformed pose/motion
-features. The notebooks cover feature preprocessing and tree/ensemble modeling;
-the application supplies pose estimation, tracking and window feature extraction.
+features. This module extracts features from pose-window exports, preprocesses
+them and trains tree/ensemble models. Pose estimation and tracking run in the
+application.
 
 ## Start here
 
 1. Follow the repository [setup guide](../ANACONDA_SETUP_GUIDE.md).
-2. Receive the separate data ZIP and place cleaned inputs as described below.
-3. Read [behavior_preprocess.ipynb](behavior_preprocess.ipynb) when preparing
-   features, or open [behavior_modeling.ipynb](behavior_modeling.ipynb) for supplied
-   cleaned data.
+2. Use the local extraction route below for pose-window exports, or place supplied
+   cleaned inputs in the modeling directory.
+3. Read [behavior_preprocess.ipynb](behavior_preprocess.ipynb) when transforming
+   extracted features, or open [behavior_modeling.ipynb](behavior_modeling.ipynb)
+   for supplied cleaned data.
 4. See [MODELS](../docs/MODELS.md) for recorded results and
    [HANDOVER](../docs/HANDOVER.md) for delivery/setup.
 
+## Local feature extraction
+
+The standalone [extraction script](extract_engineered_features.py) prepares
+features and splits from pose-window exports. Its paths are relative to this
+module, regardless of the shell's working directory:
+
+| Directory | Contents |
+|---|---|
+| `raw_data/fall/`, `raw_data/no-fall/`, `raw_data/run/` | Exported `keypoint_windows.npz`, annotations and manifest |
+| `features_extracted_data/` | `train_split.npz`, `val_split.npz`, `test_split.npz` |
+| `cleaned_features_data/` | Supplied cleaned split files |
+| `data/` | Inputs consumed by the modeling notebook |
+
+**PowerShell, Bash or Zsh, from the repository root:**
+
+```sh
+python behavioral-detection/extract_engineered_features.py
+```
+
+The script constructs 141 features, clips the 16 aggregate/sampled hip-ankle
+columns to [0,1], and groups windows by resolved video ID before assigning
+approximately 70%/15%/15% to train/validation/test. It uses available video IDs,
+otherwise IDs inferred from contiguous overlapping windows. See the
+[feature reference](docs/FEATURES_FOR_BEHAVIOR_DETECTION.md) for feature definitions.
+
+Running the script regenerates the split files. Preserve a completed experiment's
+inputs before intentionally generating another set.
+
 ## Preprocessing workspace
 
-The preprocessing notebook runs in a feature-extraction workspace. Before
+The preprocessing notebook retains its existing workspace-based paths. Before
 executing it, set the kernel working directory to the workspace that provides
 `backend/app/services/video_features.py` and these precomputed inputs:
 
@@ -25,6 +55,10 @@ train_split.npz
 val_split.npz
 test_split.npz
 ```
+
+For the local extraction route, copy the three files from
+`features_extracted_data/` into that kernel working directory. The notebook
+reads/writes there; it does not automatically use the extraction/cleaned folders.
 
 Each input contains `X` with 141 ordered features, integer `y`, and `video_ids`.
 The notebook constructs column names from the external schema with two columns
@@ -35,6 +69,8 @@ mapping, formulas and exact order.
 Choose `dataset_name` in the setup cell and run for each split. The notebook
 applies training-only balancing and the documented feature transforms, then
 exports `X`/`y` in `<split>_cleaned.npz`.
+Copy the three resulting cleaned files into this module's `data/` directory for
+modeling. Supplied files in `cleaned_features_data/` can be copied there directly.
 
 The [labelling export](https://github.com/7718TMT/ppe_labeling/blob/inference/docs/DATA_EXPORT.md)
 contains pose windows and annotations. The preprocessing input described here is

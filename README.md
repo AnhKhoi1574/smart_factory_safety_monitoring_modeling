@@ -34,9 +34,11 @@ Notebooks orchestrate the workflows; reusable logic lives in each module's
 
 ## Data and outputs
 
-Datasets, generated data, experiment reports, YOLO runs and model weights are
-excluded from Git. They are delivered separately. Preserve their directory layout
-when unpacking. Keep source code, configs, notebooks and documentation in Git.
+Model weights, YOLO runs and experiment artifacts are delivered separately from
+the source checkout. The Behavior module also contains the preprocessing inputs
+and split files brought in from `main`; its guide documents their paths. Preserve
+directory layouts when unpacking additional dataset ZIPs. Keep large additional
+datasets and new run outputs outside Git.
 
 ## Documentation
 
