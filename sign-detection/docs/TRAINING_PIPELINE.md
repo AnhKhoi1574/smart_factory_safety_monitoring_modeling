@@ -1,58 +1,81 @@
-# Training Pipeline
+# Training pipeline
 
-Purpose: document candidate triage, ablation training, final training, and final test evaluation for the sign detector.
+Paths are relative to `sign-detection/`. Complete
+[dataset preparation](DATASET_PREPARATION.md) first. Notebook links are in the
+[module README](../README.md).
 
-## Candidate Selection
+## 03 — Offline augmentation
 
-Notebook 05 performs architecture triage before any ablation study. It trains
-all configured lightweight YOLO candidates on `data_exp_D_full_pipeline.yaml`
-so every architecture sees the same full-pipeline training condition:
-original train data, offline augmented train data, and online augmentation
-enabled through Ultralytics training arguments.
+Generate from `data/generated/splits_original/train/` only. Validation/test remain
+original. Parameters and generation ratios live in
+[`augmentation_config.yaml`](../configs/augmentation_config.yaml).
 
-Candidate selection uses validation metrics only. Recall is the first sorting
-priority because missed factory signs may fail to activate backend safety
-rules. The test split is not evaluated or used for candidate selection in this
-notebook. The top successful architecture from
-`reports/training/candidate_model_ranking.csv` is the architecture Notebook 06
-should use for ablation training.
+- Geometric transforms simulate rotation, scale, translation and viewpoint
+  changes. Transform box corners and clip the new boxes to the image.
+- Photometric transforms simulate grayscale/IR, light, shadow and contrast;
+  labels remain unchanged.
+- Weather/quality transforms simulate blur, compression, noise, dirty lens and
+  low-resolution effects; labels remain unchanged.
+- Synthetic placement is optional and disabled by default; pasted signs require
+  new matching boxes when enabled.
 
-## Ablation Study
+No-sign samples keep empty labels after augmentation. Review the saved summaries
+and visual examples before building experiments.
 
-Notebook 06 runs the ablation study after architecture selection is complete.
-It resolves the selected architecture from
-`reports/training/candidate_model_ranking.csv`, or falls back to
-`selected_model` in `configs/training_config.yaml` when needed.
+## 04 — Experiment datasets
 
-The selected architecture is fixed across all four experiments:
-`exp_A_original_only`, `exp_B_online_aug`, `exp_C_offline_aug`, and
-`exp_D_full_pipeline`. Online augmentation is enabled only for B and D through
-training arguments. Validation metrics decide the best training configuration;
-the test set is not used for ablation selection.
+Build four directories under `data/generated/experiments/`:
 
-Notebook 07 should use the selected architecture and the top successful
-ablation experiment for final training and final test evaluation.
+| Experiment | Training data | Online augmentation |
+|---|---|---|
+| `exp_A_original_only` | Original | Off |
+| `exp_B_online_aug` | Original | On |
+| `exp_C_offline_aug` | Original + offline | Off/minimal |
+| `exp_D_full_pipeline` | Original + offline | On |
 
-## Final Evaluation
+Validation/test are copied identically into all four directories. Notebook 04
+builds datasets and YAMLs; online augmentation is applied later as training args.
 
-Notebook 07 performs final training and final test evaluation. It resolves the
-selected architecture from Notebook 06 ablation results first, then falls back
-to Notebook 05 candidate ranking or `configs/training_config.yaml`.
+## 05–06 — Model and augmentation comparison
 
-For final deployment, Notebook 07 intentionally selects
-`exp_D_full_pipeline` even if another ablation experiment ranks higher on
-validation metrics. This manual override is recorded in
-`reports/training/final_training_summary.csv` because the full pipeline is
-expected to be more robust in real factory CCTV conditions: it combines
-offline CCTV-style augmentation with online training augmentation.
+[Training config](../configs/training_config.yaml) declares candidate checkpoints,
+epoch budgets, seed, image size, batch, device and ranking priorities. Review the
+notebook setup flags, including `DRY_RUN`, before execution.
 
-Notebook 07 is the first stage allowed to evaluate on the untouched test set.
-The test metrics are for final reporting only and must not be used to revise
-architecture, augmentation choices, confidence thresholds, or backend logic.
+Notebook 05 compares candidates using `data_exp_D_full_pipeline.yaml` under the
+same training condition. It ranks validation recall, mAP50, mAP50-95, FPS and model
+size and writes `reports/training/candidate_model_ranking.csv`.
 
-## Export
+Notebook 06 selects that architecture and compares A/B/C/D on validation. It writes
+`reports/training/ablation_ranking.csv`. Test results do not participate in either
+comparison. Unsupported models or failed runs are reported separately.
 
-Final deployment exports are saved under `weights/final/`. ONNX is the default
-export format. Export failures are recorded in
-`reports/training/final_export_report.csv` and should not invalidate the final
-test report.
+## 07 — Final training, evaluation and export
+
+Notebook 07 resolves the architecture from ablation ranking, then candidate
+ranking, then explicit config. The final setup cell specifies the experiment used
+for fitting; the delivered training record uses `exp_D_full_pipeline` with online
+augmentation enabled.
+
+Review the notebook's training/evaluation/export controls before running cells.
+It trains the final model, retains/copies `best.pt` and `last.pt` into
+`weights/final/`, evaluates `best.pt` on test for reporting, and can save sample
+predictions and deployment exports. ONNX is configured by default.
+
+Reports are written under `reports/training/`:
+
+```text
+final_training_summary.csv
+final_test_results.csv
+final_class_metrics.csv
+final_export_report.csv
+```
+
+The summary records model/experiment choices and output paths. Use validation for
+training decisions; final test metrics are reporting outputs. Preserve completed
+reports before starting a new experiment in the same workspace.
+
+Application class-to-rule behavior is maintained in the dashboard. Notebook 08
+and inference helper files in this module are placeholders. See
+[MODELS](../../docs/MODELS.md) for recorded results and
+[HANDOVER](../../docs/HANDOVER.md#verification-baseline) for structural checks.

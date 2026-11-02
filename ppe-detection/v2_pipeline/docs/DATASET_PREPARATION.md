@@ -1,8 +1,10 @@
-# Dataset Preparation
+# Dataset preparation
 
-## Source lanes
+Paths in this guide are relative to `ppe-detection/v2_pipeline/`.
 
-The pipeline reads three immutable YOLO source lanes:
+## Inputs
+
+Place YOLO image/label pairs in these source lanes:
 
 ```text
 data/input/open_source/{images,labels}/
@@ -10,48 +12,61 @@ data/input/factory_source/{images,labels}/
 data/input/test_source/{images,labels}/
 ```
 
-- Open-source samples are train-only.
-- Factory samples are split into train and validation.
-- Test-source samples form the independent final test set.
+| Lane | Pipeline use |
+|---|---|
+| `open_source` | Training only |
+| `factory_source` | Training and validation |
+| `test_source` | Final test evaluation |
 
-Each image uses a matching sibling `.txt` label with the same stem. The fixed
-class map is stored only in `configs/class_names.yaml`.
+Use matching image and `.txt` label stems. Each non-empty label row is
+`class_id x_center y_center width height`, with coordinates normalized to the
+image. The class map is defined in
+[`class_names.yaml`](../configs/class_names.yaml). Supported extensions, empty-label
+policy, seed and split ratio are defined in
+[`dataset_config.yaml`](../configs/dataset_config.yaml).
 
-## Audit
+The labelling tool exports `images/` and `labels/` pairs. Unpack the supplied
+training ZIPs into their designated lanes; preserve filenames and the images/labels
+relationship. Delivery steps are in [HANDOVER](../../../docs/HANDOVER.md).
 
-Notebook 01 validates image readability, image-label pairing, supported image
-types, five-value YOLO rows, numeric normalized coordinates, positive box size,
-box boundaries, class IDs, duplicate annotation rows, duplicate stems, and
-duplicate content. Empty labels follow `allow_empty_labels` in
-`configs/dataset_config.yaml`.
+## 01 — Audit and profile
 
-The audit is read-only. Invalid rows block split freezing.
+Notebook 01 checks image readability, pairs, YOLO row shape, class IDs, coordinate
+bounds, positive box size, duplicate rows/stems and duplicate content. It profiles
+class distribution without modifying source images or labels. Its run retains
+`run.yaml`, validation CSVs and selected EDA figures. Resolve invalid inputs before
+freezing splits.
 
-## Manifest split
+## 02 — Freeze membership
 
-Notebook 02 creates small run-local files instead of copying images:
+Notebook 02 creates:
 
 ```text
-manifests/train_original.txt
-manifests/val.txt
-manifests/test.txt
-manifests/split_assignments.csv
+artifacts/<split-run>/
+  run.yaml
+  manifests/
+    split_assignments.csv
+    train_original.txt
+    val.txt
+    test.txt
+  csv/split_summary.csv
 ```
 
-Factory train/validation membership is deterministic for the configured seed
-and grouped by helmet, vest, and cleaning-coverall presence. Singleton groups
-remain in train and produce a warning.
+The default factory split is 80% train and 20% validation with seed 42. It
+stratifies by PPE-class presence; singleton strata remain in train. All
+`open_source` images join train, and `test_source` forms test.
 
-All manifests contain absolute image paths. Ultralytics resolves labels through
-the sibling `images/` -> `labels/` layout. Train, validation, and test path
-overlap is rejected.
+The manifests reference original images by absolute path. Labels resolve through
+the sibling `images/` to `labels/` layout; source images are not copied into
+physical split/experiment folders. Preserve historical manifests as evidence.
+For work on another machine, create a new split run from the locally placed inputs.
 
-Notebook 02 also fingerprints the ordered test image and label bytes. Notebook
-06 recomputes that SHA-256 value before final training/evaluation and stops if
-the supposedly untouched test source changed.
+The split run records a test image-and-label content fingerprint. Final Notebooks
+07/08 check it before their training/evaluation workflow.
 
-## Storage policy
+## Generated files
 
-Do not create active `data/generated/splits/` or
-`data/generated/experiments/` trees. Existing legacy generated folders may
-remain locally until a separately authorized cleanup after parity checks.
+Only offline augmentation creates new dataset images under
+`data/generated/augmented/`. Keep original validation/test images unchanged.
+Follow the [training pipeline](TRAINING_PIPELINE.md) after split preparation.
+Generated data and artifacts remain outside Git.

@@ -1,150 +1,116 @@
-# Training Pipeline
+# Training pipeline
 
-## Sequence
+Paths are relative to `ppe-detection/v2_pipeline/`. First complete
+[dataset preparation](DATASET_PREPARATION.md). Notebook links are in the
+[module README](../README.md).
 
-```text
-01 audit + EDA
--> 02 freeze manifests
--> 03 generate and review offline augmentation
--> 04 select architecture on validation
--> 05 select augmentation on validation
--> 06 calibrate small-object input resolution on validation
--> 07 final retrain + one untouched-test evaluation
-```
-
-Notebooks 04-06 cannot resolve a test manifest. Notebook 07 is the locked
-conclusion and generates a dataset YAML with `test`. Optional Notebook 08 is a
-separate direct-final path described below.
-
-## Candidate selection
-
-Candidate models use the configured `candidate_experiment` with identical
-membership, augmentation, epochs, image size, batch, seed, and device settings.
-Only architecture varies. Unsupported checkpoints are recorded and do not hide
-successful rows.
-
-Ultralytics is imported lazily. Automatic pretrained downloads are contained
-inside the current artifact run rather than the notebook directory. Raw
-stdout/stderr and Ultralytics logger output are suppressed. An
-`on_fit_epoch_end` callback updates one Jupyter panel in place with the current
-model, epoch, train losses, and validation metrics. Only failed runs retain a
-bounded raw-log excerpt in the failures CSV.
-
-The tracked runtime defaults use `batch: 32` and `workers: 6` for the intended
-16 GB NVIDIA GPU and 20-core Windows workstation. Multiple dataloader workers
-prevent image decoding and online augmentation from serializing on the Jupyter
-kernel's main process. After every model, the training helper explicitly shuts
-down both persistent loader pools, removes trainer/model references, runs
-garbage collection, and clears unused CUDA allocator blocks before starting the
-next candidate. If Windows worker spawning fails, reduce `workers` to 4 and
-then 2. RAM caching is intentionally disabled
-because Ultralytics warns that it may weaken deterministic execution; disk
-caching is also avoided because it writes cache files beside source images.
-
-## Small-object resolution calibration
-
-Notebook 06 reads the model and augmentation experiment locked by Notebook 05
-and compares exactly these tracked profiles:
-
-| Profile | Image size | Batch |
-| --- | ---: | ---: |
-| `img640` | 640 | 32 |
-| `img960` | 960 | 16 |
-| `img1280` | 1280 | 8 |
-
-All other settings and train/validation manifests remain fixed. Successful
-`best.pt` checkpoints are re-evaluated on validation at their matching image
-size and ranked by helmet recall, helmet mAP50-95, overall mAP50-95, then FPS.
-No test manifest is copied or resolved. The selected profile, `imgsz`, and
-`batch` are written to `run.yaml`; intermediate profile checkpoints are
-removed by default because Notebook 07 retrains the selected configuration.
-
-## Final training and test
-
-Notebook 07 reads model, experiment, image size, and batch from a completed
-Notebook 06 run. An
-actual final run requires both:
+## Standard route
 
 ```text
-DRY_RUN = False
-ALLOW_TEST_EVALUATION = True
+01 audit → 02 freeze manifests → 03 offline augmentation QA
+→ 04 architecture selection → 05 augmentation ablation
+→ 06 resolution calibration → 07 final training and test
 ```
 
-`FINAL_EXPERIMENT_OVERRIDE` defaults to `None`. An override is accepted only
-when it matches the experiment already calibrated by Notebook 06; otherwise
-the notebook fails before test access and instructs the user to rerun
-resolution calibration with that policy.
+Notebook controls are in their setup cells. Training notebooks support dry runs;
+06–08 default to `DRY_RUN=True`. Inspect setup cells before running the notebook.
+A dry run can create a run artifact even though it does not train a model.
 
-Before training or evaluation, it verifies the frozen test image-and-label
-fingerprint. Every run also records Python/package versions, Git revision,
-seed, CUDA version, and detected GPU names in `run.yaml`.
+## 03 — Offline augmentation
 
-Final fitting has two phases:
+Read only frozen `train_original.txt`. Generate mild, non-geometric IR/grayscale,
+sunlight/glare and blur/JPEG simulations. Geometry is unchanged, so labels are
+copied unchanged. Review the before/after figure and augmentation summary.
 
-1. Calibration starts from pretrained weights, trains on the selected A-D
-   manifest, validates on clean frozen validation data, and locks the first
-   epoch with maximum validation mAP50-95.
-2. Refit restarts from the same pretrained checkpoint, combines the selected
-   training manifest with validation, disables validation and early stopping,
-   and runs exactly the locked epoch count. C/D therefore preserve offline
-   augmented samples while adding clean validation images. Refit `last.pt` is
-   the final checkpoint; calibration `best.pt` is not continued or deployed.
+The combined `train_original_plus_offline.txt` includes original training paths
+plus accepted outputs from this augmentation run. Validation/test are not augmented.
+Existing augmentation targets require explicit regeneration to overwrite.
 
-Both training YAMLs omit test. The test-enabled evaluation YAML is created
-only after refit has completed.
+## 04–05 — Architecture and augmentation
 
-The final run keeps:
+[Training defaults](../configs/training_config.yaml) define candidate models,
+epoch budgets, batch/image size and ranking priorities. Candidates share the same
+training conditions so architecture is the variable. Failed/unsupported candidates
+are reported separately.
 
-- one descriptive refit checkpoint copied from `last.pt`,
-- requested deployment export(s),
-- overall and optional class-level test CSVs,
-- one confusion matrix when available,
-- one bounded prediction sample grid.
+The [experiment matrix](../configs/experiments.yaml) uses two train memberships:
 
-Calibration checkpoints, candidate/ablation checkpoints, native training
-directories, and pretrained download caches are not retained by default.
+| Experiment | Membership | Online augmentation |
+|---|---|---|
+| A | Original | Off |
+| B | Original | On |
+| C | Original + offline | Off |
+| D | Original + offline | On |
 
-## Optional direct train-plus-val workflow
+Online parameters come from
+[`augmentation_config.yaml`](../configs/augmentation_config.yaml), not persistent
+image files. A/C neutralize the configured online transforms; B/D enable them.
+A/B share the original manifest, and C/D share the combined manifest. All four use
+the same validation membership and selected architecture.
 
-Notebook 08 bypasses Notebook 03-07 selection outputs. It consumes Notebook
-02's frozen `split_assignments.csv` and trains one explicit `MODEL_NAME`. The
-supplied presets are `yolo12n.pt` and `yolo12s.pt`, while any
-Ultralytics-supported checkpoint name or local model path may be entered.
+Candidate/ablation ranking uses validation recall, mAP50, mAP50-95, FPS and model
+size in the order defined by config. Notebook 05 records the selected experiment
+in `run.yaml`. Notebooks 04–06 resolve train/validation only.
 
-`USE_OPEN_SOURCE_DATA=False` removes only `open_source` rows. All factory train
-and validation rows remain. Offline augmentation is intentionally absent;
-`USE_ONLINE_AUGMENTATION` applies the tracked Notebook 04 augmentation arguments
-without writing more dataset images.
+## 06 — Resolution calibration
 
-Notebook 08 uses two training phases for the same model and policy. Explicit
-`TRAIN_IMGSZ` and `TRAIN_BATCH` settings apply identically to both phases:
+Keep architecture and augmentation policy fixed and compare the configured
+640/32, 960/16 and 1280/8 image-size/batch profiles on validation. Rank helmet
+recall first, followed by helmet mAP50-95, overall mAP50-95 and FPS. Store the
+selected profile and exact source run IDs in metadata for Notebook 07.
 
-1. Calibration trains on frozen `train`, validates on disjoint factory `val`,
-   uses configured early stopping, and locks the first epoch with maximum
-   validation mAP50-95. Its dataset YAML omits test.
-2. Refit restarts from the original pretrained checkpoint, combines original
-   `train + val`, disables validation and early stopping, and trains exactly
-   the locked epoch count. It retains refit `last.pt`, not the calibration
-   checkpoint.
+## 07 — Epoch calibration, refit and test
 
-Ultralytics requires a `val` key even when refit validation is disabled, so the
-refit YAML explicitly points `train` and `val` to the same development
-manifest. Refit progress displays losses only instead of unavailable metric
-zeroes. The test manifest remains disjoint and is evaluated only after refit
-when both real-run flags are authorized.
+A real final run requires both `DRY_RUN=False` and
+`ALLOW_TEST_EVALUATION=True`. Pin `SOURCE_RESOLUTION_RUN` when reproducing a chosen
+experiment rather than relying on newest-run discovery.
 
-Notebook 08 is suitable for an intentional direct deployment run, not for
-comparing multiple models or source-toggle alternatives on the test set. Each
-such decision must be fixed before test metrics are viewed.
+1. Consume Notebook 06's selected model, experiment, image size and batch.
+2. Train calibration on selected train membership and clean validation. Lock the
+   first epoch with the best validation mAP50-95.
+3. Restart from the original pretrained checkpoint. Refit selected train plus
+   clean validation for the locked epoch count, with validation/early stopping
+   disabled. Experiments C/D retain their offline training examples.
+4. Retain refit `last.pt` as the final checkpoint, then evaluate test for reporting.
+5. Save overall/per-class metrics, confusion matrix, bounded sample predictions
+   and configured exports.
 
-## Structural verification
+Training YAMLs omit test. The test-enabled evaluation YAML is created after refit.
+The refit YAML uses the development manifest for both train/val keys to satisfy
+Ultralytics' format, while runtime validation remains disabled. Final test metrics
+do not feed back into model or threshold selection.
 
-Before any full training run:
+## 08 — Alternative direct route
+
+After Notebook 02, Notebook 08 accepts an explicit `MODEL_NAME` and source/online
+augmentation choices instead of running 03–07. Open-source data is optional;
+offline augmentation is absent. `TRAIN_IMGSZ` and `TRAIN_BATCH` apply to both
+calibration and refit. Calibration locks the epoch on train/validation, then a
+fresh pretrained initialization is refitted on original train + validation before
+final test reporting. It retains refit `last.pt`.
+
+Use a new run for each intentional experiment and declare choices before viewing
+test results.
+
+## Outputs and retention
+
+Each run writes under:
 
 ```text
-python -m compileall ppe-detection/v2_pipeline/src
-python -m unittest discover -s ppe-detection/v2_pipeline/tests -v
+artifacts/<timestamp>_<stage>_<descriptor>_s<seed>_<git-sha>/
+  run.yaml
+  manifests/
+  figures/
+  csv/
+  models/
 ```
 
-Also validate notebook JSON/code cells and parse every YAML file. Full training
-is not a structural test.
+`run.yaml` records source run IDs, settings, runtime and retained outputs. Only
+selected/final checkpoints and compact reports are retained by default. Native
+Ultralytics `_work` and pretrained-cache directories are cleaned after retention
+unless `keep_intermediates` is enabled. Treat completed artifacts as immutable.
+
+A preprocessing run can use CPU; training defaults select device 0. Use an
+appropriate device/worker count for a new run. The helpers shut down dataloader
+workers between models. See [HANDOVER](../../../docs/HANDOVER.md#verification-baseline)
+for structural checks and [MODELS](../../../docs/MODELS.md) for recorded results.

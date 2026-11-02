@@ -1,0 +1,185 @@
+# Behavior feature engineering
+
+This document defines the **141 transformed features** used by this repository's
+Behavior models: their formulas, units, preprocessing and column order. The
+143-column raw feature set provides the context for the two omitted columns.
+Labels are `0=others`, `1=running`, `2=falling`; they come from annotations, not
+fixed feature thresholds.
+
+See the [Behavior README](../README.md) for execution and
+[MODELS](../../docs/MODELS.md) for recorded evaluation results.
+
+## From raw features to model inputs
+
+| Representation | Columns | Contents |
+|---|---:|---|
+| Raw feature set | 143 | A: 6, B: 7, C: 120, D: 4, E: 6 |
+| Preprocessing input | 141 | Raw order with `valid_frame_ratio` and `track_gap_count` omitted |
+| Model input | 141 | Same order; five square-root and two double-log summary transforms |
+
+The preprocessing notebook reads `<split>_split.npz`: numeric `X` of shape
+`(N, 141)`, integer `y` of shape `(N,)`, and `video_ids`. The two omitted columns
+must already be absent from `X`; the notebook does not take a 143-column matrix
+and delete them automatically. The required column order is specified below.
+
+For `dataset_name == 'train'`, it samples 1,200 rows per class with seed 42:
+`others` without replacement, `running`/`falling` with replacement, then shuffles.
+Validation/test keep their supplied rows. It applies the transforms below,
+renames those seven columns in place, and exports `<split>_cleaned.npz` with `X`
+and `y`. The modeling loader requires finite numeric values and does not repeat
+the transforms.
+
+## Window, geometry and units
+
+- One worker track supplies 60 canonical frames at 24 FPS: 2.5 seconds.
+  Default stride is 12 frames: 0.5 seconds. Short tracks are not padded.
+- Local indices are 0–59; the final period is frames 36–59.
+- Keypoint confidence must meet the configured threshold, default 0.10.
+  Shoulder, hip and ankle midpoints each require both associated keypoints.
+- `W` and `H` are nonnegative bbox width/height in pixels. Body scale `S` is the
+  bbox diagonal, falling back to height, torso length, then 1.
+- Body center is the midpoint of shoulder and hip centers; there is no
+  bbox-center fallback.
+- Mean/population std ignore missing and nonfinite values and default to 0 when
+  empty. Maxima ignore missing values and default to 0.
+
+These are image-space measurements normalized by bbox/body size, not calibrated
+distances or speeds in meters.
+
+### Frame metrics
+
+| Metric | Definition | Raw unit/range |
+|---|---|---|
+| `torso_angle` | `degrees(atan2(abs(shoulder_y-hip_y), abs(shoulder_x-hip_x)))` | Degrees, [0,90] |
+| `compression` | `abs(nose_y-hip_y)/H` | Nonnegative ratio |
+| `hip_ankle` | `abs(hip_y-ankle_y)/S` | Nonnegative ratio |
+| `spread_ratio` | Usable-joint x-range / y-range; otherwise `W/H`, or 0 when H is zero | Nonnegative ratio |
+| `ground_speed` | Adjacent ground-point displacement / `(H_t * dt)`; ground point is ankle midpoint or bbox bottom-center | Bbox heights/second |
+| `scale_speed` | `abs(H_t-H_previous)/(H_t * dt)` | 1/second |
+| `combined_speed` | `ground_speed + 0.45 * scale_speed` | Normalized rate, 1/second |
+| `body_speed` | Adjacent body-center displacement / `(S_t * dt)` | Body scales/second |
+
+Here `dt=1/24`. Motion requires relevant adjacent observations and nonzero
+denominators. If one combined-speed term is unavailable, it contributes 0 when
+the other is available. Frame 0 has no within-window predecessor; motion is not
+calculated across gaps.
+
+Compression and hip-ankle separation have no explicit upper cap of 1 in these
+feature definitions or in training preprocessing. Spread needs at least two usable points and
+nonzero joint y-range; otherwise it uses the bbox fallback. An entirely missing
+frame has missing geometry rather than a bbox fallback.
+
+## Ordered model feature vector
+
+Indices are zero-based. Concatenate **A → B → C → D → E** in exactly this order.
+Summary transforms occur after aggregation, not on each frame. `sqrt_` and `log_`
+columns are transformed numeric inputs, not untransformed physical speeds/ratios.
+
+### A — Posture summaries: 6 columns, indices 0–5
+
+| Index | Model column | Value |
+|---:|---|---|
+| 0 | `torso_angle_mean` | Mean torso angle |
+| 1 | `torso_angle_std` | Population std of torso angle |
+| 2 | `head_hip_compression_mean` | Mean compression |
+| 3 | `hip_ankle_vertical_diff_mean` | Mean hip-ankle separation |
+| 4 | `log_skeleton_spread_ratio_mean` | `log1p(log1p(mean spread_ratio))` |
+| 5 | `log_skeleton_spread_ratio_max` | `log1p(log1p(max spread_ratio))` |
+
+### B — Motion summaries: 7 columns, indices 6–12
+
+| Index | Model column | Value |
+|---:|---|---|
+| 6 | `sqrt_ground_speed_mean` | `sqrt(mean ground_speed)` |
+| 7 | `sqrt_ground_speed_max` | `sqrt(max ground_speed)` |
+| 8 | `scale_speed_mean` | Mean scale speed |
+| 9 | `sqrt_combined_speed_mean` | `sqrt(mean combined_speed)` |
+| 10 | `sqrt_combined_speed_std` | `sqrt(population std of combined_speed)` |
+| 11 | `body_speed_max` | Maximum body speed |
+| 12 | `sqrt_body_acceleration_max` | `sqrt(max(abs(body_speed_t-body_speed_previous)*24))` |
+
+Acceleration uses adjacent nonmissing body speeds after eligible interpolation.
+It is an absolute scalar speed difference, not signed vertical acceleration.
+
+The preprocessing notebook uses `sqrt(x)` and `log1p(log1p(x))` directly on these
+nonnegative summaries, without adding a clamp. Only these five motion and two
+spread summaries are transformed and renamed.
+
+### C — Sampled time series: 120 columns, indices 13–132
+
+Sample local frames `0,4,8,...,56`. At each step `i=0,...,14`, append these eight
+columns in order before moving to the next step. For offset `j`, the model index
+is `13 + 8*i + j`.
+
+| Offset j | Model column pattern | Frame metric |
+|---:|---|---|
+| 0 | `step_torso_angle_t{i}` | Torso angle |
+| 1 | `step_compression_t{i}` | Compression |
+| 2 | `step_spread_ratio_t{i}` | Spread ratio |
+| 3 | `step_combined_speed_t{i}` | Combined speed |
+| 4 | `step_hip_ankle_t{i}` | Hip-ankle separation |
+| 5 | `step_ground_speed_t{i}` | Ground speed |
+| 6 | `step_scale_speed_t{i}` | Scale speed |
+| 7 | `step_body_speed_t{i}` | Body speed |
+
+The seven summary transforms do not apply to sampled columns. Motion is computed
+at 24 FPS before sampling. Missing sampled values become 0. Sampling at six
+steps/second does not itself apply smoothing or an anti-alias filter.
+
+### D — Final-period posture and motion: 4 columns, indices 133–136
+
+Let `ramp(x,lo,hi)=clip((x-lo)/(hi-lo),0,1)`. `T` is mean torso angle and `R` is
+mean spread over frames 36–59; `J` is mean eligible joint motion defined below.
+
+| Index | Model column | Value / raw unit |
+|---:|---|---|
+| 133 | `final_lying_score` | Mean of `1-ramp(T,25,75)`, `ramp(R,0.8,1.6)`, `1-ramp(J,0.01,0.20)`; score [0,1] |
+| 134 | `final_1s_body_speed_mean` | Mean body speed in frames 36–59; body scales/second |
+| 135 | `final_1s_joint_motion_mean` | Mean eligible joint motion; body scales/frame pair |
+| 136 | `final_1s_joint_motion_std` | Population std of eligible joint motion; body scales/frame pair |
+
+For adjacent pairs wholly inside the final period, take original ordered
+usable-joint lists only when both are nonempty and equal in length. Average
+their positional Euclidean displacements and divide by `max(S_t,1)`. At most
+23 pairs contribute. Joint lists are not interpolated; this motion is not
+multiplied by FPS. Equal lengths do not guarantee matching joint IDs when
+different joints are hidden.
+
+`final_lying_score` is a fixed heuristic feature, not a calibrated class
+probability. Empty summaries default to 0; the score alone does not establish
+a valid pose.
+
+### E — Quality features: 4 columns, indices 137–140
+
+These use original observations before metric interpolation.
+
+| Index | Model column | Value / raw unit |
+|---:|---|---|
+| 137 | `avg_keypoint_confidence` | Mean available keypoint scores, including below-threshold scores; confidence |
+| 138 | `missing_ankle_ratio` | Fraction of 60 frames missing or with either ankle below threshold; [0,1] |
+| 139 | `missing_hip_ratio` | Fraction of 60 frames missing or with either hip below threshold; [0,1] |
+| 140 | `skeleton_jump_score` | Maximum adjacent observed body-center displacement / `max(S_t,1)`; body scales/frame pair |
+
+The raw feature set also contains `valid_frame_ratio` (non-None observations / 60) and
+`track_gap_count` (internal missing runs between observations). Both are omitted
+from the model vector; retained columns keep their relative order. Missing
+frames add no zero keypoint scores to average confidence.
+
+## Missing values
+
+Feature construction computes geometry and motion, then interpolates each of the eight
+metric arrays on the full 60-frame sequence. Only bounded gaps of at most the
+configured maximum, default six frames, are linearly filled. Leading, trailing
+and longer gaps remain missing; there is no extrapolation. Summary/sampling
+stages use those interpolated arrays where applicable.
+
+These rules describe how the feature values are constructed. The preprocessing
+notebook receives precomputed columns; it does not calculate geometry or
+interpolate pose sequences. The cleaned model matrix must contain finite numeric
+values. The four quality columns are ordinary model inputs.
+
+## Using the features in this repository
+
+Use the ordered 141-column contract for cleaned NPZ files and model inputs;
+do not infer feature order from JSON keys. Apply the seven transforms once.
+Keep integer class IDs consistent and map probabilities through `model.classes_`.
