@@ -1,81 +1,62 @@
-# Anaconda Setup Guide
+# Anaconda setup guide
 
-This project is designed around an Anaconda workflow for Jupyter-heavy PPE detector development. The environment file installs the general data, visualization, and YOLO tooling on Python 3.14. PyTorch GPU support is installed as a follow-up step so each can choose the right build for their machine.
+Use Conda for the notebook workflows. Run these commands from the repository root
+in a shell where `conda` is available: Anaconda Prompt/PowerShell on Windows, or
+Bash/Zsh on Linux/macOS.
 
-## 1. Create the Base Environment
+## 1. Create the general notebook environment
 
-From the repository root:
+**All platforms:**
 
-```powershell
-cd C:\Github\smart-factory-safety-monitoring-system
+```sh
 conda env create -f environment.yml
-conda activate ppe-yolo
-python -m ipykernel install --user --name=ppe-yolo --display-name "Python (ppe-yolo)"
+conda activate smart-factory-train
+python -m ipykernel install --user --name smart-factory-train --display-name "Python (smart-factory-train)"
 ```
 
-## 2. Install PyTorch for Your Device
+`environment.yml` declares Python 3.14 and the data, plotting and Behavior
+modeling packages, plus pip-installed YOLO tools. It is an environment definition,
+not a version lock for historical runs. `requirements.txt` contains the common
+pip toolset; it is not a complete replacement for the Conda Behavior dependencies.
 
-The `environment.yml` intentionally does not pin `torch` so you can install a CPU or CUDA build that matches your workstation.
+For PPE v2, also apply its supported Ultralytics range in the intended kernel:
 
-### Option A: NVIDIA GPU, CUDA 13.2 wheels
+**All platforms, repository root:**
 
-Use this if your NVIDIA environment is set up for CUDA 13.2 and you want the matching PyTorch wheel index:
-
-```powershell
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu132
+```sh
+python -m pip install -r ppe-detection/v2_pipeline/requirements.txt
 ```
 
-### Option B: NVIDIA GPU, CUDA 13.0 wheels
+Use a separate environment when preserving an existing training workstation.
+Select the correct kernel in Jupyter before running cells.
 
-Use this if your NVIDIA environment is standardized on CUDA 13.0-compatible drivers:
+## 2. Select PyTorch for the device
 
-```powershell
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+Use the official [PyTorch installation selector](https://pytorch.org/get-started/locally/)
+for the target OS, Python and CPU/CUDA platform. Run its command inside the
+activated environment. For a historical build, use the official
+[previous-version instructions](https://pytorch.org/get-started/previous-versions/).
+
+The selector is the primary installation reference; a CUDA command from another
+workstation is not a hardware-independent setup instruction.
+
+## 3. Check the selected interpreter
+
+**All platforms, activated environment:**
+
+```sh
+python -c "import sys; print(sys.executable); print(sys.version)"
+python -c "import torch; print('torch', torch.__version__); print('cuda', torch.cuda.is_available()); print('build', torch.version.cuda)"
+jupyter lab
 ```
 
-### Option C: NVIDIA GPU, CUDA 12.6 wheels
+## 4. Choose a workflow
 
-Use this if your NVIDIA environment is standardized on CUDA 12.6-compatible drivers:
+- [PPE v2](ppe-detection/v2_pipeline/README.md): begin with Notebook 01; use the
+  documented standard or direct route.
+- [Sign](sign-detection/README.md): run the data and training notebooks in order.
+- [Behavior](behavioral-detection/README.md): read the preprocessing workspace
+  requirements, or begin modeling from supplied cleaned NPZ inputs.
 
-```powershell
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-```
-
-### Option D: CPU-only fallback
-
-```powershell
-pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-```
-
-These install options are based on the official PyTorch installation guidance:
-
-- https://docs.pytorch.org/get-started/locally/
-- https://docs.pytorch.org/get-started/previous-versions/
-
-## 3. Verify CUDA Availability
-
-```powershell
-python -c "import torch; print('torch', torch.__version__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count()); print('device_name', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
-```
-
-Optional system-level check:
-
-```powershell
-nvidia-smi
-```
-
-## 4. Open the v2 Pipeline
-
-After the environment is ready, work from the notebooks in:
-
-- `ppe-detection/v2_pipeline/notebooks/01_validate_and_merge_dataset.ipynb`
-- through
-- `ppe-detection/v2_pipeline/notebooks/09_inference_tracking_demo.ipynb`
-
-The notebooks import reusable helpers from `ppe-detection/v2_pipeline/src/`.
-
-## 5. Notes for Teammates
-
-- Each teammate should contribute source folders in the form `images/` plus `labels/`.
-- Do not place large datasets, generated YOLO runs, or trained weights under Git-tracked paths outside the ignored artifact folders.
-- The legacy v1 assets remain available under `ppe-detection/v1_legacy/` for reference only.
+Data placement and training instructions belong in those module guides. Model
+setup for the applications is in [HANDOVER](docs/HANDOVER.md#application-model-paths).

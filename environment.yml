@@ -1,4 +1,4 @@
-name: ppe-yolo
+name: smart-factory-train
 channels:
   - conda-forge
   - defaults
@@ -11,6 +11,12 @@ dependencies:
   - matplotlib
   - seaborn
   - scikit-learn
+  - joblib
+  - optuna
+  - xgboost
+  - lightgbm
+  - sqlalchemy
+  - python-dotenv
   - opencv
   - pillow
   - pyyaml

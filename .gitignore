@@ -48,6 +48,10 @@ ppe-detection/**/data/experiments/**
 # YOLO outputs
 ppe-detection/**/runs/**
 
+# Run-scoped PPE v2 artifacts
+ppe-detection/v2_pipeline/artifacts/**
+!ppe-detection/v2_pipeline/artifacts/.gitkeep
+
 # Model weights and exports
 *.pt
 *.onnx
@@ -61,6 +65,8 @@ ppe-detection/**/reports/**/*.jpg
 ppe-detection/**/results/**/*.csv
 ppe-detection/**/results/**/*.png
 ppe-detection/**/results/**/*.jpg
+
+ppe-detection/v2_pipeline/docs/pipeline_refactor_plan.md
 
 # Sign detection local data and generated outputs
 sign-detection/data/input/images/*
@@ -76,9 +82,14 @@ sign-detection/weights/**
 !sign-detection/**/.gitkeep
 !sign-detection/AGENTS.md
 
+# Behavior Detection 
+behavioral-detection/data/**
+behavioral-detection/docs/behavior_modeling_refactor_plan.md
+behavioral-detection/artifacts/**
+
 # OS files
 .DS_Store
 Thumbs.db
 
 # Agents
-AGENTS.md
+**/AGENTS.md

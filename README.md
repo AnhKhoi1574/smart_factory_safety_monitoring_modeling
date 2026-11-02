@@ -1,92 +1,57 @@
-# Smart Factory Safety Monitoring System
+# Smart Factory Safety Monitoring — Model Training
 
-This repository contains model-training workstreams for a smart factory safety
-monitoring system. The active PPE workstream trains a YOLO object detector for
-fixed elevated factory CCTV views.
+Prepare data, train and evaluate the PPE, safety-sign and worker-behavior models
+for the RMIT capstone project with De Heus.
 
-The active PPE v2 detector uses four object classes:
+| Workstream | Model output | Start here |
+|---|---|---|
+| PPE | `people`, `helmets`, `vests`, `cleaning coverall` | [PPE v2](ppe-detection/v2_pipeline/README.md) |
+| Safety signs | `helmet`, `vest`, `no thoroughfare`, `slippery` | [Sign detection](sign-detection/README.md) |
+| Behavior | `others`, `running`, `falling` from pose/motion features | [Behavior classification](behavioral-detection/README.md) |
 
-- `0`: person
-- `1`: helmet
-- `2`: vest
-- `3`: cleaning_coverall
+For the De Heus handover, start with [HANDOVER](docs/HANDOVER.md).
+For delivered models and recorded results, read [MODELS](docs/MODELS.md).
 
-The detector does not predict violation classes directly. It emits objects that
-the backend can associate over time, then role/PPE logic decides whether a
-person is compliant, missing a helmet, missing a role uniform, or wearing a
-cleaning coverall.
+## System boundaries
 
-## Repository Layout
+- The labelling tool creates, reviews and exports annotations and supports model inspection.
+- This repository prepares training inputs, selects models and records evaluation.
+- The dashboard uses supplied
+  models for inference and monitoring.
+  
 
-- `environment.yml`: Anaconda environment definition for notebook work.
-- `requirements.txt`: pip-oriented dependency mirror for managed environments.
-- `ANACONDA_SETUP_GUIDE.md`: setup notes, including CUDA-enabled PyTorch.
-- `show_structure.py`: lightweight tree printer for repository checks.
-- `ppe-detection/`: PPE detection module with legacy work and the active v2
-  pipeline.
-- `sign-detection/`: factory safety sign detection pipeline.
-- `behavioral-detection/`: behavioral data & preprocessing pipeline.
+## Set up and continue
 
-## PPE v2 Data Contract
+1. Follow the [Anaconda setup guide](ANACONDA_SETUP_GUIDE.md).
+2. Receive the separate dataset ZIPs and model package described in
+   [HANDOVER](docs/HANDOVER.md).
+3. Open the selected module's README and follow its notebook order.
+4. Use validation for experiment decisions; reserve test evaluation for the
+   reporting stage described by that pipeline.
 
-The active PPE pipeline is:
+Notebooks orchestrate the workflows; reusable logic lives in each module's
+`src/`. [PPE v1](ppe-detection/v1_legacy/README.md) is historical work.
 
-```text
-ppe-detection/v2_pipeline/
-```
+## Data and outputs
 
-Input data is placed locally under:
+Model weights, YOLO runs and experiment artifacts are delivered separately from
+the source checkout. The Behavior module also contains the preprocessing inputs
+and split files brought in from `main`; its guide documents their paths. Preserve
+directory layouts when unpacking additional dataset ZIPs. Keep large additional
+datasets and new run outputs outside Git.
 
-```text
-ppe-detection/v2_pipeline/data/input/open_source/images/
-ppe-detection/v2_pipeline/data/input/open_source/labels/
+## Documentation
 
-ppe-detection/v2_pipeline/data/input/factory_source/images/
-ppe-detection/v2_pipeline/data/input/factory_source/labels/
+| Need | Document |
+|---|---|
+| Receive the repository and model package | [Handover](docs/HANDOVER.md) |
+| Understand models and recorded results | [Models](docs/MODELS.md) |
+| Set up Python/Jupyter | [Anaconda setup](ANACONDA_SETUP_GUIDE.md) |
+| Prepare and train PPE | [PPE v2](ppe-detection/v2_pipeline/README.md) |
+| Prepare and train Sign | [Sign](sign-detection/README.md) |
+| Preprocess and model Behavior | [Behavior](behavioral-detection/README.md) |
+| Understand Behavior feature engineering | [Feature reference](behavioral-detection/docs/FEATURES_FOR_BEHAVIOR_DETECTION.md) |
+| Review ownership | [Ownership](OWNERSHIP.md) |
 
-ppe-detection/v2_pipeline/data/input/test_source/images/
-ppe-detection/v2_pipeline/data/input/test_source/labels/
-```
-
-Source policy:
-
-- `open_source`: external/public data used for training only.
-- `factory_source`: target-domain factory CCTV data used for train/validation.
-- `test_source`: final untouched test data used only for final evaluation.
-
-Generated folders are created by notebooks or helper code when needed under:
-
-```text
-ppe-detection/v2_pipeline/data/generated/
-```
-
-Do not use the old `raw_sources`, `master_original`, or `open_source_train`
-workflow for new PPE v2 work.
-
-## Recommended PPE Workflow
-
-1. Create the conda environment from `environment.yml`.
-2. If training on NVIDIA hardware, install CUDA-enabled PyTorch using
-   [ANACONDA_SETUP_GUIDE.md](ANACONDA_SETUP_GUIDE.md).
-3. Place YOLO image/label pairs into the PPE v2 `data/input` source lanes.
-4. Run the notebooks in `ppe-detection/v2_pipeline/notebooks/` in order.
-5. Keep validation and test data original and untouched after splitting.
-6. Use validation metrics for model/ablation decisions; use the test set only
-   once for final reporting.
-
-## Data and Artifact Policy
-
-Raw input data, generated splits, augmented datasets, experiment datasets,
-reports, YOLO runs, model weights, and exported models are intentionally ignored
-by Git.
-
-Track source code, configs, docs, notebooks, and intentional `.gitkeep`
-placeholders only.
-
-## Main Entry Points
-
-- PPE module overview: [ppe-detection/README.md](ppe-detection/README.md)
-- PPE legacy area: [ppe-detection/v1_legacy/README.md](ppe-detection/v1_legacy/README.md)
-- PPE v2 pipeline: [ppe-detection/v2_pipeline/README.md](ppe-detection/v2_pipeline/README.md)
-- Sign detection module: [sign-detection/README.md](sign-detection/README.md)
-- Behavioral detection module: [behavioral-detection/README.md](behavioral-detection/README.md)
+Documentation is maintained manually from implementation and recorded run outputs.
+Archived material is historical and is not the operating guide.

@@ -1,18 +1,45 @@
-epochs: 100
 candidate_epochs: 50
 final_epochs: 100
 ablation_epochs: 100
+# Notebook 06 compares only input resolution while keeping the selected model,
+# augmentation policy, manifests, seed, and epoch budget fixed.
+resolution_epochs: 100
+resolution_profiles:
+  - name: img640
+    imgsz: 640
+    batch: 32
+  - name: img960
+    imgsz: 960
+    batch: 16
+  - name: img1280
+    imgsz: 1280
+    batch: 8
+# Small-object safety performance is the primary decision criterion. Overall
+# accuracy and throughput break ties instead of silently overriding helmet recall.
+resolution_selection_priority:
+  - helmet_recall
+  - helmet_map50_95
+  - overall_map50_95
+  - fps
 imgsz: 640
-batch: 24
+# A 32-image batch uses the 16 GB GPU more efficiently for the configured
+# nano-size candidates while keeping one identical batch size across models.
+batch: 32
 device: 0
-# Windows/Jupyter-safe default. Increase only after confirming dataloader workers
-# do not leave orphan processes or crash the kernel.
-workers: 8
+# Six workers balance dataloader throughput with Windows process/RAM overhead.
+# The training helper explicitly shuts both loader pools down between models.
+# Fall back to 4, then 2, only if a local kernel shows worker-spawn errors.
+workers: 6
+# Keep source directories immutable and deterministic; worker prefetching is
+# the primary input-pipeline optimization for this experiment series.
+cache: false
 patience: 20
 seed: 42
 amp: true
 latency_max_images: 20
-selected_experiment: exp_D_full_pipeline
+candidate_experiment: exp_D_full_pipeline
+keep_intermediates: false
+keep_last_checkpoint: false
 final_export_formats:
   - onnx
 final_prediction_conf: 0.25
@@ -30,4 +57,4 @@ selection_priority:
   - map50
   - map50_95
   - fps
-  - model_size
+  - model_size_mb

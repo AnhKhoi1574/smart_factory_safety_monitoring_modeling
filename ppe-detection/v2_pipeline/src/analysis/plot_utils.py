@@ -1,289 +1,184 @@
-"""Reusable plotting helpers for PPE dataset EDA notebooks."""
+"""Focused plotting helpers used by the PPE experiment notebooks."""
 
 from __future__ import annotations
 
-from math import ceil
+import math
 from pathlib import Path
-from typing import Any
+from typing import Iterable
 
 import pandas as pd
 from PIL import Image
 
-CLASS_COLORS = {
-    "person": "#9BB8D3",
-    "helmet": "#DF82A8",
-    "vest": "#D4C2A5",
-    "cleaning_coverall": "#88B99A",
-}
+
+def plot_class_distribution(distribution: pd.DataFrame, output_path: Path):
+    """Plot grouped source/class object counts and save one labeled figure."""
+    plt = _pyplot()
+    pivot = distribution.pivot(index="class_name", columns="source", values="object_count")
+    figure, axis = plt.subplots(figsize=(9, 4.8))
+    pivot.plot.bar(ax=axis)
+    axis.set_title(f"PPE object distribution by source (n={int(distribution.object_count.sum()):,})")
+    axis.set_xlabel("Class")
+    axis.set_ylabel("Annotated objects")
+    axis.tick_params(axis="x", rotation=20)
+    axis.legend(title="Source")
+    _save(figure, output_path)
+    return figure
 
 
-def _load_plotting() -> tuple[Any, Any, Any]:
-    """Import plotting dependencies only when a figure is requested."""
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        from matplotlib.patches import Rectangle
-    except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "Matplotlib and Seaborn are required for EDA plotting. "
-            "Install the v2_pipeline plotting dependencies before running figure cells."
-        ) from exc
-
-    sns.set_theme(style="whitegrid", context="notebook")
-    return plt, sns, Rectangle
-
-
-def _save_figure(fig: Any, output_path: Path | None) -> Path | None:
-    if output_path is None:
-        return None
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=180, bbox_inches="tight")
-    return output_path
+def plot_split_balance(summary: pd.DataFrame, output_path: Path):
+    """Plot class counts for the frozen train/validation/test manifests."""
+    plt = _pyplot()
+    class_columns = [
+        column
+        for column in summary
+        if column.startswith("num_") and column != "num_images"
+    ]
+    plot_frame = summary.set_index("split")[class_columns]
+    plot_frame.columns = [column.removeprefix("num_") for column in plot_frame.columns]
+    figure, axis = plt.subplots(figsize=(9, 4.8))
+    plot_frame.plot.bar(ax=axis)
+    axis.set_title(f"Frozen split class balance (images={int(summary.num_images.sum()):,})")
+    axis.set_xlabel("Split")
+    axis.set_ylabel("Annotated objects")
+    axis.tick_params(axis="x", rotation=0)
+    axis.legend(title="Class")
+    _save(figure, output_path)
+    return figure
 
 
-def _empty_plot(title: str, output_path: Path | None = None) -> Any:
-    plt, _, _ = _load_plotting()
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.text(0.5, 0.5, "No records available", ha="center", va="center", fontsize=13)
-    ax.set_axis_off()
-    ax.set_title(title)
-    _save_figure(fig, output_path)
-    return fig
+def plot_metric_comparison(
+    results: pd.DataFrame,
+    label_column: str,
+    metrics: Iterable[str],
+    output_path: Path,
+    title: str,
+):
+    """Plot a small set of comparable validation metrics."""
+    metric_columns = [metric for metric in metrics if metric in results]
+    if not metric_columns:
+        raise ValueError("No requested metric columns are available")
+    plt = _pyplot()
+    figure, axis = plt.subplots(figsize=(9, 4.8))
+    results.set_index(label_column)[metric_columns].plot.bar(ax=axis)
+    axis.set_title(f"{title} (runs={len(results)})")
+    axis.set_xlabel(label_column.replace("_", " ").title())
+    axis.set_ylabel("Validation metric")
+    axis.set_ylim(bottom=0)
+    axis.tick_params(axis="x", rotation=20)
+    axis.legend(title="Metric")
+    _save(figure, output_path)
+    return figure
 
 
-def plot_class_distribution(
-    class_distribution_df: pd.DataFrame,
-    output_path: Path | None = None,
-    title: str = "Class distribution",
-) -> plt.Figure:
-    """Plot object counts by class."""
-    if class_distribution_df.empty:
-        return _empty_plot(title, output_path)
-
-    plt, sns, _ = _load_plotting()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    sns.barplot(
-        data=class_distribution_df,
-        x="class_name",
-        y="object_count",
-        hue="class_name",
-        palette=CLASS_COLORS,
-        legend=False,
-        ax=ax,
+def plot_augmentation_contact_sheet(
+    report: pd.DataFrame,
+    output_path: Path,
+    *,
+    samples_per_transform: int = 2,
+):
+    """Save paired original/augmented examples with transform captions."""
+    selected = (
+        report.loc[report["status"].eq("generated")]
+        .groupby("augmentation_type", sort=True)
+        .head(samples_per_transform)
+        .reset_index(drop=True)
     )
-    ax.set_title(title)
-    ax.set_xlabel("Class")
-    ax.set_ylabel("Object count")
-    for patch, percentage in zip(
-        ax.patches, class_distribution_df["percentage"], strict=False
-    ):
-        height = patch.get_height()
-        ax.annotate(
-            f"{int(height)}\n{percentage:.1f}%",
-            (patch.get_x() + patch.get_width() / 2, height),
-            ha="center",
-            va="bottom",
+    if selected.empty:
+        raise ValueError("No generated augmentation examples are available")
+
+    plt = _pyplot()
+    rows = len(selected)
+    # Give each image column enough horizontal room for a readable caption.
+    figure, axes = plt.subplots(
+        rows,
+        2,
+        figsize=(13, max(3.4, rows * 3.1)),
+        squeeze=False,
+    )
+    for row_index, row in enumerate(selected.itertuples(index=False)):
+        with Image.open(row.original_image_path) as image:
+            original = image.convert("RGB")
+        with Image.open(row.augmented_image_path) as image:
+            augmented = image.convert("RGB")
+        axes[row_index, 0].imshow(original)
+        axes[row_index, 0].set_title(
+            f"Original\n{_compact_filename(row.original_image_path)}",
             fontsize=9,
+            pad=7,
         )
-    _save_figure(fig, output_path)
-    return fig
-
-
-def plot_bbox_area_distribution(
-    bbox_df: pd.DataFrame,
-    output_path: Path | None = None,
-    title: str = "Bounding box area distribution",
-) -> plt.Figure:
-    """Plot normalized bounding box area by class."""
-    if bbox_df.empty:
-        return _empty_plot(title, output_path)
-
-    plt, sns, _ = _load_plotting()
-    fig, ax = plt.subplots(figsize=(9, 5))
-    sns.histplot(
-        data=bbox_df,
-        x="box_area_norm",
-        hue="class_name",
-        bins=40,
-        palette=CLASS_COLORS,
-        element="step",
-        stat="count",
-        common_norm=False,
-        ax=ax,
-    )
-    ax.set_title(title)
-    ax.set_xlabel("Normalized box area")
-    ax.set_ylabel("Object count")
-    ax.set_xlim(left=0)
-    _save_figure(fig, output_path)
-    return fig
-
-
-def plot_bbox_width_height_scatter(
-    bbox_df: pd.DataFrame,
-    output_path: Path | None = None,
-    title: str = "Bounding box width vs height",
-) -> plt.Figure:
-    """Plot normalized width and height for every box."""
-    if bbox_df.empty:
-        return _empty_plot(title, output_path)
-
-    plt, sns, _ = _load_plotting()
-    fig, ax = plt.subplots(figsize=(7, 6))
-    sns.scatterplot(
-        data=bbox_df,
-        x="width_norm",
-        y="height_norm",
-        hue="class_name",
-        palette=CLASS_COLORS,
-        alpha=0.65,
-        s=34,
-        ax=ax,
-    )
-    ax.set_title(title)
-    ax.set_xlabel("Normalized width")
-    ax.set_ylabel("Normalized height")
-    ax.set_xlim(left=0)
-    ax.set_ylim(bottom=0)
-    ax.legend(title="Class")
-    _save_figure(fig, output_path)
-    return fig
-
-
-def plot_objects_per_image(
-    objects_per_image_df: pd.DataFrame,
-    output_path: Path | None = None,
-    title: str = "Objects per image",
-) -> plt.Figure:
-    """Plot the distribution of total object counts per image."""
-    if objects_per_image_df.empty:
-        return _empty_plot(title, output_path)
-
-    plt, sns, _ = _load_plotting()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    max_count = int(objects_per_image_df["object_count"].max())
-    bins = range(0, max_count + 2)
-    sns.histplot(
-        data=objects_per_image_df, x="object_count", bins=bins, color="#264653", ax=ax
-    )
-    ax.set_title(title)
-    ax.set_xlabel("Object count per image")
-    ax.set_ylabel("Image count")
-    _save_figure(fig, output_path)
-    return fig
-
-
-def _draw_box(ax: Any, row: pd.Series, image_width: int, image_height: int) -> None:
-    _, _, Rectangle = _load_plotting()
-    class_name = str(row["class_name"])
-    color = CLASS_COLORS.get(class_name, "#457B9D")
-    box_width = float(row["width_norm"]) * image_width
-    box_height = float(row["height_norm"]) * image_height
-    left = (float(row["x_center_norm"]) * image_width) - box_width / 2
-    top = (float(row["y_center_norm"]) * image_height) - box_height / 2
-    ax.add_patch(
-        Rectangle(
-            (left, top),
-            box_width,
-            box_height,
-            fill=False,
-            edgecolor=color,
-            linewidth=2.2,
+        axes[row_index, 1].imshow(augmented)
+        axes[row_index, 1].set_title(
+            f"{str(row.augmentation_type).replace('_', ' ').title()}\n"
+            f"{_compact_filename(row.augmented_image_path)}",
+            fontsize=9,
+            pad=7,
         )
-    )
-
-    # Scale label size with the object while keeping tiny PPE labels readable.
-    object_scale = min(box_width, box_height)
-    label_font_size = max(3.0, min(7.0, object_scale * 0.10))
-    label_padding = max(0.2, min(0.8, label_font_size * 0.08))
-    if class_name in {"person", "vest"}:
-        label_x = left + 1
-        label_y = top + box_height - 2
-        vertical_alignment = "bottom"
-    else:
-        label_x = left
-        label_y = max(top - 2, 0)
-        vertical_alignment = "bottom"
-
-    ax.text(
-        label_x,
-        label_y,
-        class_name,
-        color="black",
-        fontsize=label_font_size,
-        va=vertical_alignment,
-        bbox={
-            "facecolor": color,
-            "alpha": 0.85,
-            "edgecolor": "none",
-            "pad": label_padding,
-        },
-    )
+        for axis in axes[row_index]:
+            axis.axis("off")
+    figure.suptitle(f"Offline augmentation visual QA (pairs={rows})", y=1.01)
+    figure.subplots_adjust(wspace=0.24, hspace=0.38)
+    _save(figure, output_path)
+    return figure
 
 
-def visualize_sample_annotations(
-    image_df: pd.DataFrame,
-    bbox_df: pd.DataFrame,
-    output_path: Path | None = None,
-    sample_count: int = 6,
-    random_state: int = 42,
-    title: str = "Sample annotations",
-) -> plt.Figure:
-    """Create a grid of sample images with YOLO boxes drawn on top."""
-    if image_df.empty:
-        return _empty_plot(title, output_path)
-
-    annotated_names = (
-        bbox_df["image_name"].drop_duplicates().tolist() if not bbox_df.empty else []
-    )
-    candidates = (
-        image_df[image_df["image_name"].isin(annotated_names)]
-        if annotated_names
-        else image_df
-    )
-    if candidates.empty:
-        candidates = image_df
-
-    sample_size = min(sample_count, len(candidates))
-    sample_df = (
-        candidates.sample(n=sample_size, random_state=random_state)
-        if sample_size
-        else candidates
-    )
-
-    plt, _, _ = _load_plotting()
-    cols = min(3, max(1, sample_size))
-    rows = ceil(sample_size / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
-    axes_list = list(axes.flat) if hasattr(axes, "flat") else [axes]
-
-    for ax, image_row in zip(
-        axes_list, sample_df.itertuples(index=False), strict=False
-    ):
-        image_path = Path(image_row.image_path)
+def plot_image_grid(
+    image_paths: Iterable[Path],
+    output_path: Path,
+    *,
+    title: str,
+    columns: int = 3,
+):
+    """Combine a small set of already annotated images into one figure."""
+    paths = [Path(path) for path in image_paths]
+    if not paths:
+        raise ValueError("No images were supplied for the grid")
+    plt = _pyplot()
+    rows = math.ceil(len(paths) / columns)
+    figure, axes = plt.subplots(rows, columns, figsize=(columns * 4, rows * 3.2), squeeze=False)
+    for axis, image_path in zip(axes.flat, paths):
         with Image.open(image_path) as image:
-            ax.imshow(image.convert("RGB"))
-        image_boxes = bbox_df.loc[bbox_df["image_name"] == image_row.image_name]
-        for _, box_row in image_boxes.iterrows():
-            _draw_box(
-                ax, box_row, int(image_row.image_width), int(image_row.image_height)
-            )
-        ax.set_title(image_row.image_name, fontsize=10)
-        ax.set_axis_off()
-
-    for ax in axes_list[sample_size:]:
-        ax.set_axis_off()
-
-    fig.suptitle(title, fontsize=14)
-    fig.tight_layout()
-    _save_figure(fig, output_path)
-    return fig
+            axis.imshow(image.convert("RGB"))
+        axis.set_title(image_path.name)
+        axis.axis("off")
+    for axis in list(axes.flat)[len(paths):]:
+        axis.axis("off")
+    figure.suptitle(f"{title} (images={len(paths)})", y=1.01)
+    _save(figure, output_path)
+    return figure
 
 
-def save_placeholder_figure(output_path: Path, title: str) -> Path:
-    """Backward-compatible placeholder export helper."""
-    plt, _, _ = _load_plotting()
-    fig = _empty_plot(title, output_path)
-    plt.close(fig)
-    return Path(output_path)
+def _pyplot():
+    """Import Matplotlib lazily so non-visual tests stay lightweight."""
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def _compact_filename(path: str | Path, max_chars: int = 38) -> str:
+    """Shorten a long filename in the middle while preserving its extension.
+
+    Args:
+        path: Image path shown in a figure title.
+        max_chars: Maximum displayed filename length, including the extension.
+
+    Returns:
+        Original filename when short enough, otherwise a head/tail abbreviation.
+    """
+    name = Path(path).name
+    if len(name) <= max_chars:
+        return name
+
+    suffix = Path(name).suffix
+    stem = Path(name).stem
+    available = max(8, max_chars - len(suffix) - 3)
+    head_length = (available + 1) // 2
+    tail_length = available // 2
+    return f"{stem[:head_length]}...{stem[-tail_length:]}{suffix}"
+
+
+def _save(figure, output_path: Path) -> None:
+    """Save one tight PNG and create only its immediate output directory."""
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.tight_layout()
+    figure.savefig(destination, dpi=150, bbox_inches="tight")

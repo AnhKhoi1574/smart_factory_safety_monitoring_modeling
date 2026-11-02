@@ -7,7 +7,8 @@ Notebook 01 validates the three source lanes directly:
 ``factory_source``
     Target-domain CCTV data. It is split into train and validation later.
 ``test_source``
-    Final untouched test data. It is copied to the test split later.
+    Final untouched test data. It is frozen in a manifest and used only during
+    final evaluation.
 
 The helpers do not copy, rename, split, augment, or delete files.
 """
@@ -68,6 +69,7 @@ class LabelStats:
     class_counts: dict[int, int] | None = None
 
     def __post_init__(self) -> None:
+        """Initialize zero counts for all four classes when omitted."""
         if self.class_counts is None:
             self.class_counts = {class_id: 0 for class_id in DEFAULT_CLASS_IDS}
 
@@ -410,6 +412,7 @@ def _validate_label_file(
     """
     errors: list[str] = []
     label_stats = LabelStats(class_counts={class_id: 0 for class_id in allowed_class_ids})
+    seen_rows: dict[tuple[int, float, float, float, float], int] = {}
 
     try:
         raw_text = label_path.read_text(encoding="utf-8").strip()
@@ -433,6 +436,15 @@ def _validate_label_file(
         if isinstance(parsed_values, str):
             errors.append(parsed_values)
             continue
+
+        first_line = seen_rows.get(parsed_values)
+        if first_line is not None:
+            errors.append(
+                f"Line {line_number}: duplicate annotation row; "
+                f"matches line {first_line}"
+            )
+            continue
+        seen_rows[parsed_values] = line_number
 
         class_id, x_center, y_center, box_width, box_height = parsed_values
         if class_id not in allowed_class_ids:

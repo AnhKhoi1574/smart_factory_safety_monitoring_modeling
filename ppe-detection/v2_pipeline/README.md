@@ -1,73 +1,33 @@
-# v2 Pipeline
+# PPE detection v2
 
-This is the clean, reproducible PPE detection pipeline for the Smart Factory
-Safety Monitoring System.
+Train a four-class YOLO object detector. Class IDs/names are defined in
+[`configs/class_names.yaml`](configs/class_names.yaml); violation logic runs in
+the downstream application.
 
-The detector predicts four object classes:
+## Start here
 
-```text
-0 = person
-1 = helmet
-2 = vest
-3 = cleaning_coverall
-```
+1. Follow the repository [setup guide](../../ANACONDA_SETUP_GUIDE.md).
+2. Place inputs using [dataset preparation](docs/DATASET_PREPARATION.md).
+3. Follow the notebook order below. Select the standard or direct training route
+   described in the [training pipeline](docs/TRAINING_PIPELINE.md).
+4. Find recorded results and delivery names in [MODELS](../../docs/MODELS.md).
 
-Backend violation logic is handled after detection. Do not train direct
-violation classes.
+## Notebook order
 
-## Current Data Contract
+| Notebook | Purpose |
+|---|---|
+| [01](notebooks/01_data_audit_and_eda.ipynb) | Audit inputs and profile the dataset |
+| [02](notebooks/02_split_and_freeze_manifests.ipynb) | Freeze train/validation/test manifests |
+| [03](notebooks/03_offline_augmentation_qa.ipynb) | Generate and review training augmentation |
+| [04](notebooks/04_candidate_model_selection.ipynb) | Select architecture on validation |
+| [05](notebooks/05_augmentation_ablation.ipynb) | Compare augmentation policies |
+| [06](notebooks/06_small_object_resolution_calibration.ipynb) | Select input resolution and batch profile |
+| [07](notebooks/07_final_training_and_test.ipynb) | Calibrate epochs, refit and evaluate |
+| [08](notebooks/08_direct_model_training_and_test.ipynb) | Alternative direct model workflow after 02 |
 
-Input data is placed manually under:
+Reusable helpers live in `src/`; settings live in `configs/`. Runs are stored
+under ignored `artifacts/` directories. Inference/tracking helpers in this module
+are placeholders; use the labelling tool or dashboard for application inference.
 
-```text
-data/input/open_source/images/
-data/input/open_source/labels/
-
-data/input/factory_source/images/
-data/input/factory_source/labels/
-
-data/input/test_source/images/
-data/input/test_source/labels/
-```
-
-Source policy:
-
-- `open_source`: train only.
-- `factory_source`: train and validation.
-- `test_source`: final untouched test set.
-
-Generated data belongs under:
-
-```text
-data/generated/splits/
-data/generated/augmented/
-data/generated/experiments/
-```
-
-The old `data/master_original`, `data/raw_sources`, and
-`data/open_source_train` workflow is no longer the active v2 design.
-
-## Core Rules
-
-1. Validate input sources before splitting.
-2. Split before any augmentation.
-3. Keep validation and test original and untouched.
-4. Use validation metrics for model and ablation decisions.
-5. Use the test set only once for final reporting.
-6. Keep raw input data, generated datasets, reports, runs, and weights out of
-   Git.
-
-## Notebook Order
-
-1. `01_validate_and_merge_dataset.ipynb` - validates source lanes only.
-2. `02_dataset_eda.ipynb`
-3. `03_split_dataset.ipynb`
-4. `04_offline_augmentation.ipynb`
-5. `05_build_ablation_datasets.ipynb`
-6. `06_candidate_model_training.ipynb`
-7. `07_ablation_study.ipynb`
-8. `08_final_training_and_evaluation.ipynb`
-9. `09_inference_tracking_demo.ipynb`
-
-Reusable code lives under `src/`; notebooks should stay as readable
-orchestration.
+Structural verification commands are maintained in
+[HANDOVER](../../docs/HANDOVER.md#verification-baseline).

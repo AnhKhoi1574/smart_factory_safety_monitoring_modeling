@@ -1,47 +1,29 @@
-# Factory Sign Detection
+# Factory sign detection
 
-This module trains a lightweight YOLO detector for four ISO-7010 factory safety signs from overhead or elevated factory CCTV footage.
+Train a YOLO detector for four factory safety-sign classes. The fixed mapping is
+defined in [`configs/class_names.yaml`](configs/class_names.yaml). Application
+code uses the detections to activate safety rules or propose zones.
 
-## Fixed Classes
+## Start here
 
-```text
-0 = M014_Helmet
-1 = M015_Vest
-2 = P004_NoThoroughfare
-3 = W011_Slippery
-```
+1. Follow the repository [setup guide](../ANACONDA_SETUP_GUIDE.md).
+2. Place YOLO images/labels using [dataset preparation](docs/DATASET_PREPARATION.md).
+3. Run the notebooks below using the [training pipeline](docs/TRAINING_PIPELINE.md).
+4. See [MODELS](../docs/MODELS.md) for recorded results and delivery filenames.
 
-The detector acts as a backend logic-controller input:
+| Notebook | Purpose |
+|---|---|
+| [01](notebooks/01_validate_and_profile_input_dataset.ipynb) | Validate and profile inputs |
+| [02](notebooks/02_split_and_verify_dataset.ipynb) | Create and inspect original splits |
+| [03](notebooks/03_offline_augmentation.ipynb) | Generate training augmentation |
+| [04](notebooks/04_build_ablation_datasets.ipynb) | Build A/B/C/D experiment datasets |
+| [05](notebooks/05_candidate_model_training.ipynb) | Compare candidate architectures |
+| [06](notebooks/06_ablation_study.ipynb) | Compare augmentation experiments |
+| [07](notebooks/07_final_training_and_evaluation.ipynb) | Final training, test reporting and export |
 
-- `M014_Helmet` activates helmet-required logic.
-- `M015_Vest` activates vest-required logic.
-- `P004_NoThoroughfare` activates restricted-zone logic.
-- `W011_Slippery` activates slippery danger-zone logic.
+Notebook 08 and `src/inference/` are placeholders, not a runnable application
+inference workflow. Use the labelling tool or dashboard for that workflow.
 
-## Data Layout
-
-Place prepared YOLO data directly into:
-
-```text
-data/input/images/
-data/input/labels/
-```
-
-Generated outputs such as splits, augmentations, experiment datasets, reports, runs, and weights are created automatically by notebooks or helper functions when needed.
-
-## Notebook Pipeline
-
-1. `01_validate_and_profile_input_dataset.ipynb`
-2. `02_split_and_verify_dataset.ipynb`
-3. `03_offline_augmentation.ipynb`
-4. `04_build_ablation_datasets.ipynb`
-5. `05_candidate_model_training.ipynb`
-6. `06_ablation_study.ipynb`
-7. `07_final_training_and_evaluation.ipynb`
-8. `08_inference_backend_demo.ipynb`
-
-Notebook 02 splits input into train, validation, and test. After that, validation and test must remain untouched.
-
-Geometry-changing augmentation must update labels. Do not copy labels unchanged after rotation, perspective transform, crop, translation, scale, or synthetic placement.
-
-Do not commit raw data, generated data, YOLO runs, model weights, exports, or generated reports.
+Reusable helpers live in `src/`; paths, augmentation and training defaults live
+in `configs/`. Generated data, reports, runs and weights are local outputs outside
+Git. Receipt and verification instructions are in [HANDOVER](../docs/HANDOVER.md).

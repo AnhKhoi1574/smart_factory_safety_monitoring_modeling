@@ -1,0 +1,13 @@
+experiments:
+  exp_A_original_only:
+    dataset_variant: original
+    online_augmentation: false
+  exp_B_online_aug:
+    dataset_variant: original
+    online_augmentation: true
+  exp_C_offline_aug:
+    dataset_variant: original_plus_offline
+    online_augmentation: false
+  exp_D_full_pipeline:
+    dataset_variant: original_plus_offline
+    online_augmentation: true
